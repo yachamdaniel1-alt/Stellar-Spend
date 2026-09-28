@@ -326,3 +326,72 @@ describe('performManualReconciliation', () => {
     expect(result.message).toContain('investigate');
   });
 });
+
+
+describe('fetchDailyRecords', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns empty array when dal.getByUser fails', async () => {
+    const { fetchDailyRecords } = await import('./reconciliation');
+    
+    // Mock the dal module
+    vi.doMock('@/lib/db', () => ({
+      dal: {
+        getByUser: vi.fn().mockRejectedValue(new Error('DB error')),
+      },
+    }));
+
+    const records = await fetchDailyRecords();
+    expect(records).toEqual([]);
+  });
+
+  it('filters records from yesterday', async () => {
+    const { fetchDailyRecords } = await import('./reconciliation');
+    
+    const mockTransactions = [
+      { id: 'tx-1', stellarTxHash: 'hash1', baseTxHash: '0x1', payoutOrderId: 'order1', amount: '100', currency: 'USDC', timestamp: Date.now() - 12 * 60 * 60 * 1000 }, // 12 hours ago
+      { id: 'tx-2', stellarTxHash: 'hash2', baseTxHash: '0x2', payoutOrderId: 'order2', amount: '200', currency: 'USDC', timestamp: Date.now() - 48 * 60 * 60 * 1000 }, // 2 days ago - should be filtered out
+      { id: 'tx-3', stellarTxHash: 'hash3', baseTxHash: '0x3', payoutOrderId: 'order3', amount: '300', currency: 'USDC', timestamp: Date.now() - 6 * 60 * 60 * 1000 }, // 6 hours ago
+    ];
+
+    vi.doMock('@/lib/db', () => ({
+      dal: {
+        getByUser: vi.fn().mockResolvedValue(mockTransactions),
+      },
+    }));
+
+    const records = await fetchDailyRecords();
+    expect(records).toHaveLength(2); // Only tx-1 and tx-3
+    expect(records.map(r => r.transactionId)).toEqual(['tx-1', 'tx-3']);
+  });
+});
+
+describe('runDailyReconciliation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('runs daily reconciliation and returns result', async () => {
+    const { runDailyReconciliation } = await import('./reconciliation');
+    
+    // Mock fetchDailyRecords
+    vi.doMock('@/lib/db', () => ({
+      dal: {
+        getByUser: vi.fn().mockResolvedValue([]),
+      },
+    }));
+
+    const result = await runDailyReconciliation();
+    expect(result).toHaveProperty('ok', true);
+    expect(result).toHaveProperty('totalTransactions');
+    expect(result).toHaveProperty('matchedTransactions');
+    expect(result).toHaveProperty('discrepancies');
+    expect(result).toHaveProperty('alerts');
+    expect(result).toHaveProperty('summary');
+    expect(result).toHaveProperty('runId');
+    expect(result).toHaveProperty('timestamp');
+    expect(result).toHaveProperty('history');
+  });
+});

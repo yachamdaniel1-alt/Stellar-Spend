@@ -75,7 +75,7 @@ pub struct FeeManagerContract;
 impl FeeManagerContract {
     /// Initialise with an admin and a starting fee rate.
     pub fn init(env: Env, admin: Address, default_fee_bp: u32) -> Result<(), ContractError> {
-        admin::FeeManagerContract::init(env, admin, default_fee_bp)
+        admin::Admin::init(env, admin, default_fee_bp)
     }
 
     /// Human-readable contract version, sourced from the same string as `contractmeta!`.
@@ -85,53 +85,53 @@ impl FeeManagerContract {
 
     /// Trip the circuit breaker. Admin only.
     pub fn pause(env: Env, reason: String) -> Result<(), ContractError> {
-        admin::FeeManagerContract::pause(env, reason)
+        admin::Admin::pause(env, reason)
     }
 
     /// Reset the circuit breaker. Admin only.
     pub fn unpause(env: Env) -> Result<(), ContractError> {
-        admin::FeeManagerContract::unpause(env)
+        admin::Admin::unpause(env)
     }
 
     /// Whether the circuit breaker is currently tripped.
     pub fn is_paused(env: Env) -> bool {
-        admin::FeeManagerContract::is_paused(env)
+        admin::Admin::is_paused(env)
     }
 
     /// Fee for `amount` at an explicit rate.
     pub fn calculate_fee(env: Env, amount: i128, fee_rate: u32) -> Result<i128, ContractError> {
-        calc::FeeManagerContract::calculate_fee(env, amount, fee_rate)
+        calc::Calculator::calculate_fee(env, amount, fee_rate)
     }
 
     /// Fee for `amount` at the configured default rate.
     pub fn calculate_default_fee(env: Env, amount: i128) -> Result<i128, ContractError> {
-        calc::FeeManagerContract::calculate_default_fee(env, amount)
+        calc::Calculator::calculate_default_fee(env, amount)
     }
 
     /// The configured default fee rate, in basis points.
     pub fn default_rate(env: Env) -> Result<u32, ContractError> {
-        admin::FeeManagerContract::default_rate(env)
+        admin::Admin::default_rate(env)
     }
 
     /// Update the default fee rate. Admin only.
     pub fn set_default_rate(env: Env, fee_bp: u32) -> Result<(), ContractError> {
-        admin::FeeManagerContract::set_default_rate(env, fee_bp)
+        admin::Admin::set_default_rate(env, fee_bp)
     }
 
     // ── Upgrade surface ────────────────────────────────────────────────────────
 
     pub fn schema_version(env: Env) -> Result<u32, ContractError> {
-        admin::FeeManagerContract::schema_version(env)
+        admin::Admin::schema_version(env)
     }
 
     /// Replace the contract WASM. Admin only. Run `migrate` immediately after.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
-        admin::FeeManagerContract::upgrade(env, new_wasm_hash)
+        admin::Admin::upgrade(env, new_wasm_hash)
     }
 
     /// Convert persisted state to [`SCHEMA_VERSION`]. Returns the version migrated from.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
-        admin::FeeManagerContract::migrate(env)
+        admin::Admin::migrate(env)
     }
 }
 

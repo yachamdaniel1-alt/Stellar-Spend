@@ -3,7 +3,9 @@ import {
   calculateBridgeFee,
   calculateNetworkFee,
   calculatePaycrestFee,
+  calculateTotalFees,
   calculateAllFees,
+  calculateAmountAfterFees,
 } from '../fee-calculation';
 import {
   FEE_CONSTANTS,
@@ -108,6 +110,72 @@ describe('Fee Calculation Parity Test', () => {
       const maxFeePercentage = FEE_CONSTANTS.MAX_FEE_PERCENTAGE;
 
       expect(maxFeePercentage).toBe(maxFeeBP / 100);
+    });
+  });
+
+  describe('Cross-check with Rust contract truncation toward zero', () => {
+    // The Rust contract uses basis_points_of() from stellar_spend_shared
+    // which truncates toward zero (i128 division). Frontend must match.
+
+    it('calculateBridgeFee truncates toward zero like Rust basis_points_of', () => {
+      // Rust: calculate_fee(&1, &1) → 0.0001 truncates to 0
+      // Amount 0.001 USDC at 0.5% = 0.000005, should truncate to 0.000005 (6dp)
+      const tinyAmountFee = calculateBridgeFee('0.001', 'stablecoin');
+      expect(tinyAmountFee).toBe('0.000005');
+
+      // Rust: calculate_fee(&10_000, &1) → 1
+      // Amount 10000 at 50bp (0.5%) = 50, no truncation needed
+      const exactFee = calculateBridgeFee('10000', 'stablecoin');
+      expect(exactFee).toBe('50.000000');
+
+      // Verify no rounding up occurs (the key parity issue)
+      // Amount 0.01 at 0.5% = 0.00005, toFixed(6) rounds to 0.000050
+      // But truncation should also give 0.000050 for this case
+      // The critical case: where toFixed would round up but truncation should not
+      // Amount 0.0015 at 0.5% = 0.0000075, toFixed(6) rounds to 0.000008
+      // Truncation gives 0.000007
+      const roundingCaseFee = calculateBridgeFee('0.0015', 'stablecoin');
+      expect(roundingCaseFee).toBe('0.000007');
+    });
+
+    it('calculatePaycrestFee truncates toward zero like Rust basis_points_of', () => {
+      // Amount where toFixed(2) would round but truncation should not
+      // 0.015 * 1.0% = 0.00015, toFixed(2) → 0.00, truncation → 0.00
+      const tinyPaycrest = calculatePaycrestFee('0.015');
+      expect(tinyPaycrest).toBe('0.00');
+
+      // 5000 * 1.0% = 50, exact
+      const exactPaycrest = calculatePaycrestFee('5000');
+      expect(exactPaycrest).toBe('50.00');
+    });
+
+    it('calculateTotalFees truncates toward zero', () => {
+      const total = calculateTotalFees('0.0000005', '0', '0', 'USDC');
+      // 0.0000005 with 6 decimal truncation → 0.000001 (but Math.trunc of 0.5 is 0)
+      // Actually: 0.0000005 * 1000000 = 0.5, Math.trunc(0.5) = 0
+      expect(total).toBe('0.000000');
+    });
+
+    it('calculateAmountAfterFees subtracts totalFee not just bridgeFee', () => {
+      const amount = '1000';
+      const totalFee = '50.000000';
+      const bridgeFee = '5.000000';
+      const result = calculateAmountAfterFees(amount, totalFee);
+      // Should subtract totalFee (50), not bridgeFee (5)
+      expect(parseFloat(result)).toBeCloseTo(950, 5);
+    });
+
+    it('calculateAllFees uses totalFee for amountAfterFees', async () => {
+      const result = await calculateAllFees({
+        amount: '1000',
+        currency: 'USDC',
+        feeMethod: 'stablecoin',
+        receiveAmount: '1000',
+      });
+      const amountNum = parseFloat(result.amount);
+      const afterFeesNum = parseFloat(result.amountAfterFees);
+      const totalFeeNum = parseFloat(result.totalFee);
+      expect(afterFeesNum).toBeCloseTo(amountNum - totalFeeNum, 5);
     });
   });
 });

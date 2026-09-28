@@ -6,7 +6,7 @@
 //! leaving in-flight proposals either immediately expired or permanently signable.
 
 use multisig_authority::test_utils::MultisigTest;
-use multisig_authority::{DEFAULT_PROPOSAL_TTL_LEDGERS, SCHEMA_VERSION};
+use multisig_authority::{DataKey, DEFAULT_PROPOSAL_TTL_LEDGERS, SCHEMA_VERSION};
 use stellar_spend_shared::errors::ContractError;
 
 // ── Pre-conditions ───────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ fn migrate_rejects_state_from_a_future_build() {
     let t = MultisigTest::setup();
     t.env.as_contract(&t.contract_id, || {
         t.env.storage().instance().set(
-            &soroban_sdk::Symbol::new(&t.env, "schema"),
+            &DataKey::Schema,
             &(SCHEMA_VERSION + 1),
         );
     });
@@ -159,9 +159,9 @@ fn migrate_rejects_state_from_a_future_build() {
 
 #[test]
 fn migrate_on_an_uninitialised_contract_reports_not_found() {
-    // `migrate` checks admin via `stellar_spend_shared::auth::assert_is_admin`
-    // before its own schema check runs, and that helper reports a missing storage
-    // entry as `NotFound` rather than a contract-specific `NotInitialized`.
+    // `migrate` checks admin via local `assert_is_admin` which reads
+    // `DataKey::Signers`; since `registered()` never called `init`, the
+    // config is absent and the helper reports `NotFound`.
     let t = MultisigTest::registered();
     assert_eq!(
         t.client().try_migrate(&t.admin),

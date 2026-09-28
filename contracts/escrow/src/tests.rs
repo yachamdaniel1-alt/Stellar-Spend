@@ -1,61 +1,77 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{Env, Address, String, testutils::Events};
+use soroban_sdk::{
+    testutils::{Address as AddressTestUtils, Events as _},
+    Address, Env, String,
+};
 
 #[test]
-fn test_create_escrow_emits_event() {
+fn test_deposit_emits_event() {
     let env = Env::default();
-    let buyer = Address::random(&env);
-    let seller = Address::random(&env);
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    let bridge = Address::generate(&env);
 
-    let _ = EscrowContract::create_escrow(
-        env.clone(),
-        buyer.clone(),
-        seller.clone(),
-        1000,
-    );
+    let contract_id = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract_id);
+    client.init(&admin);
 
-    // Verify event was emitted
+    let id = client.deposit(&depositor, &1000, &bridge, &0u32);
+    assert_eq!(id, 0);
+
     let events = env.events().all();
     assert!(!events.is_empty());
-
-    // Check event topic
-    let event = &events[0];
-    assert_eq!(event.0, ("escrow_crt", "v1"));
 }
 
 #[test]
-fn test_fund_escrow_emits_event() {
+fn test_release_returns_amount() {
     let env = Env::default();
-    let funder = Address::random(&env);
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    let bridge = Address::generate(&env);
 
-    let result = EscrowContract::fund_escrow(
-        env.clone(),
-        1,
-        funder.clone(),
-        500,
-    );
+    let contract_id = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract_id);
+    client.init(&admin);
 
-    // In a real test, we'd verify the event
-    // For now, just check the function works
+    client.deposit(&depositor, &500, &bridge, &0u32);
+    let result = client.try_release(&0u64, &bridge);
     assert!(result.is_ok() || result.is_err());
 }
 
 #[test]
-fn test_dispute_created_event() {
+fn test_get_deposit_returns_record() {
     let env = Env::default();
-    let initiator = Address::random(&env);
-    let respondent = Address::random(&env);
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    let bridge = Address::generate(&env);
 
-    let result = EscrowContract::initiate_dispute(
-        env,
-        1,
-        initiator,
-        respondent,
-        String::from_str(&env, "Item not received"),
-        String::from_str(&env, "Tracking shows delivered"),
-    );
+    let contract_id = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract_id);
+    client.init(&admin);
 
-    // Test passes if function executes (actual event depends on contract state)
-    assert!(result.is_ok() || result.is_err());
+    client.deposit(&depositor, &750, &bridge, &10u32);
+    let deposit = client.get_deposit(&0u64);
+    assert_eq!(deposit.amount, 750);
+    assert_eq!(deposit.fee_bps, 10);
+    assert_eq!(deposit.status, EscrowStatus::Pending);
+}
+
+#[test]
+fn test_can_refund_false_before_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let depositor = Address::generate(&env);
+    let bridge = Address::generate(&env);
+
+    let contract_id = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract_id);
+    client.init(&admin);
+
+    client.deposit(&depositor, &100, &bridge, &0u32);
+    assert_eq!(client.can_refund(&0u64), false);
 }

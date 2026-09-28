@@ -1,20 +1,13 @@
 /**
- * Centralized rate-limiter service — #794
+ * Centralized rate-limiter service — consolidated version
+ *
+ * This file combines functionality from:
+ *   • src/lib/rate-limiting.ts (InMemoryRateLimitStore, endpoint-based configs)
+ *   • src/lib/rateLimiter.ts (SlidingWindowRateLimiter, namespace-based configs)
  *
  * Provides a single authoritative place for all rate-limit configuration and
  * the shared `SlidingWindowRateLimiter` used across auth, transactions,
  * onramp, and offramp routes.
- *
- * Architecture
- * ────────────
- * Previously rate-limit logic was scattered across:
- *   • src/lib/offramp/utils/rate-limiter.ts  (SlidingWindowRateLimiter + pre-configured limiters)
- *   • src/lib/rate-limiting.ts               (InMemoryRateLimitStore + checkRateLimit helper)
- *   • src/lib/middleware/rate-limit.middleware.ts (Next.js middleware wrapper)
- *
- * This file consolidates all configuration and pre-configured limiters in one
- * place.  The existing files are preserved for backward-compatibility but
- * re-export from here.
  *
  * Usage
  * ─────
@@ -23,6 +16,10 @@
  *   // Inside a Next.js route handler:
  *   const limitResult = await applyRateLimit(request, 'build-tx');
  *   if (limitResult) return limitResult; // 429 response
+ *
+ *   // Or using endpoint-based rate limiting:
+ *   import { checkRateLimit, InMemoryRateLimitStore } from '@/lib/rateLimiter';
+ *   const result = await checkRateLimit(store, endpoint, identifier, isAuthenticated);
  */
 
 import type { NextRequest } from 'next/server';
@@ -56,6 +53,51 @@ export interface RateLimitHeaders {
   'X-RateLimit-Remaining': string;
   'X-RateLimit-Reset': string;
   'Retry-After'?: string;
+}
+
+// ── In-memory rate limit store (compatibility with old rate-limiting.ts) ──────
+
+export interface RateLimitStore {
+  get(key: string): Promise<number>;
+  set(key: string, value: number, ttl: number): Promise<void>;
+  increment(key: string, ttl: number): Promise<number>;
+  reset(key: string): Promise<void>;
+}
+
+/**
+ * In-memory rate limit store (suitable for single-instance deployments)
+ * This provides compatibility with the old rate-limiting.ts module
+ */
+export class InMemoryRateLimitStore implements RateLimitStore {
+  private store: Map<string, { count: number; resetTime: number }> = new Map();
+
+  async get(key: string): Promise<number> {
+    const entry = this.store.get(key);
+    if (!entry) return 0;
+    if (Date.now() > entry.resetTime) {
+      this.store.delete(key);
+      return 0;
+    }
+    return entry.count;
+  }
+
+  async set(key: string, value: number, ttl: number): Promise<void> {
+    this.store.set(key, {
+      count: value,
+      resetTime: Date.now() + ttl,
+    });
+  }
+
+  async increment(key: string, ttl: number): Promise<number> {
+    const current = await this.get(key);
+    const newCount = current + 1;
+    await this.set(key, newCount, ttl);
+    return newCount;
+  }
+
+  async reset(key: string): Promise<void> {
+    this.store.delete(key);
+  }
 }
 
 // ── Per-route rate-limit configuration ───────────────────────────────────────
@@ -287,4 +329,124 @@ export async function applyRateLimit(
   }
 
   return null;
+}
+
+
+// ── Endpoint-based rate limiting (compatibility with old rate-limiting.ts) ───
+
+/**
+ * Rate limit configurations for different endpoints
+ * This provides backward compatibility with the old rate-limiting.ts module
+ */
+export const RATE_LIMIT_CONFIGS: Record<string, { windowMs: number; maxRequests: number }> = {
+  // Public endpoints - strict limits
+  '/api/offramp/quote': {
+    windowMs: 60 * 1000, // 1 minute
+    maxRequests: 30,
+  },
+  '/api/offramp/currencies': {
+    windowMs: 60 * 1000,
+    maxRequests: 100,
+  },
+  '/api/offramp/rate': {
+    windowMs: 10 * 1000, // 10 seconds
+    maxRequests: 10,
+  },
+
+  // Bridge endpoints - moderate limits
+  '/api/offramp/bridge/build-tx': {
+    windowMs: 60 * 1000,
+    maxRequests: 20,
+  },
+  '/api/offramp/bridge/submit-soroban': {
+    windowMs: 60 * 1000,
+    maxRequests: 10,
+  },
+  '/api/offramp/bridge/status': {
+    windowMs: 10 * 1000,
+    maxRequests: 30,
+  },
+
+  // Payout endpoints - strict limits
+  '/api/offramp/paycrest/order': {
+    windowMs: 60 * 1000,
+    maxRequests: 5,
+  },
+  '/api/offramp/execute-payout': {
+    windowMs: 60 * 1000,
+    maxRequests: 5,
+  },
+  '/api/offramp/status': {
+    windowMs: 10 * 1000,
+    maxRequests: 30,
+  },
+
+  // Webhook endpoints - no rate limit (use signature verification instead)
+  '/api/webhooks/paycrest': {
+    windowMs: 60 * 1000,
+    maxRequests: 1000, // Very high limit for webhooks
+  },
+
+  // Health check - no rate limit
+  '/api/health': {
+    windowMs: 60 * 1000,
+    maxRequests: 1000,
+  },
+};
+
+/**
+ * Get rate limit config for an endpoint
+ */
+export function getRateLimitConfig(endpoint: string): { windowMs: number; maxRequests: number } | null {
+  // Exact match
+  if (RATE_LIMIT_CONFIGS[endpoint]) {
+    return RATE_LIMIT_CONFIGS[endpoint];
+  }
+
+  // Pattern match (e.g., /api/offramp/bridge/status/[hash])
+  for (const [pattern, config] of Object.entries(RATE_LIMIT_CONFIGS)) {
+    const regex = new RegExp(`^${pattern.replace(/\[.*?\]/g, '[^/]+')}$`);
+    if (regex.test(endpoint)) {
+      return config;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Generate rate limit key from request
+ */
+export function generateRateLimitKey(
+  endpoint: string,
+  identifier: string,
+  isAuthenticated: boolean,
+): string {
+  const prefix = isAuthenticated ? 'auth' : 'anon';
+  return `ratelimit:${prefix}:${endpoint}:${identifier}`;
+}
+
+/**
+ * Check if request should be rate limited
+ * This provides compatibility with the old rate-limiting.ts module
+ */
+export async function checkRateLimit(
+  store: RateLimitStore,
+  endpoint: string,
+  identifier: string,
+  isAuthenticated: boolean,
+): Promise<{ allowed: boolean; remaining: number; resetTime: number }> {
+  const config = getRateLimitConfig(endpoint);
+  if (!config) {
+    return { allowed: true, remaining: -1, resetTime: 0 };
+  }
+
+  const key = generateRateLimitKey(endpoint, identifier, isAuthenticated);
+  const current = await store.increment(key, config.windowMs);
+
+  const allowed = current <= config.maxRequests;
+  const remaining = Math.max(0, config.maxRequests - current);
+  const resetTime = Date.now() + config.windowMs;
+
+  return { allowed, remaining, resetTime };
 }

@@ -1,26 +1,8 @@
-//! Shared authorisation helpers for Stellar-Spend contracts.
-//!
-//! Both `multisig-authority` and `treasury` previously duplicated
-//! signer/threshold logic.  This module provides a single, well-tested
-//! implementation that every contract can depend on.
-//!
-//! # Design
-//! - All helpers take `&Env` plus the relevant storage keys as `&str` so they
-//!   remain storage-layout-agnostic; each contract controls its own key names.
-//! - The helpers **only** check – they do not mutate storage.  State changes
-//!   remain the responsibility of the calling contract so the control-flow
-//!   stays clear.
-//!
-//! # Policy invariants
-//! These invariants are intentional and must hold for every valid threshold setup:
-//! - For any `value`, if `high_value_limit > 0 && value <= high_value_limit`, the
-//!   required threshold is exactly 1.
-//! - Otherwise the required threshold is the full quorum threshold.
-//! - `verify_threshold` must accept iff `sig_count >= required_threshold(...)`.
+use soroban_sdk::{Address, Env, Symbol, Vec};
 
-use soroban_sdk::{Address, Env, Symbol, Vec, panic_with_error};
+use crate::errors::ContractError;
 
-use crate::{errors::ContractError, policy::{required_threshold, verify_threshold}};
+pub use crate::policy::{required_threshold, verify_threshold};
 
 /// Authorization error types
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,24 +13,17 @@ pub enum AuthError {
     InsufficientPermissions = 4,
 }
 
-/// Admin authorization helper
 pub struct AdminAuth;
 
 impl AdminAuth {
-    /// Require that the caller is the admin
     pub fn require_admin(env: &Env, admin: &Address, caller: &Address) -> Result<(), AuthError> {
-        // First, check that the caller address matches the admin
         if caller != admin {
             return Err(AuthError::NotAdmin);
         }
-
-        // Then, require auth for the caller
         caller.require_auth();
-
         Ok(())
     }
 
-    /// Require that the caller is either the admin or has a specific role
     pub fn require_admin_or_role(
         env: &Env,
         admin: &Address,
@@ -59,16 +34,13 @@ impl AdminAuth {
             caller.require_auth();
             return Ok(());
         }
-
         if role_check(caller) {
             caller.require_auth();
             return Ok(());
         }
-
         Err(AuthError::Unauthorized)
     }
 
-    /// Require that the caller has a specific role
     pub fn require_role(
         env: &Env,
         caller: &Address,
@@ -77,45 +49,43 @@ impl AdminAuth {
         if !role_check(caller) {
             return Err(AuthError::InsufficientPermissions);
         }
-
         caller.require_auth();
         Ok(())
     }
 
-    /// Check if the caller is the admin without throwing an error
     pub fn is_admin(env: &Env, admin: &Address, caller: &Address) -> bool {
-        if caller != admin {
-            return false;
-        }
-
-        // Try to authenticate
-        match caller.try_require_auth() {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        caller == admin
     }
-
-    /// Compute the required threshold for a given `value` and return it.
-    ///
-    /// The policy logic is isolated in `crate::policy` so the auth layer can remain
-    /// storage-focused while business rules stay in one place.
-    pub use crate::policy::{required_threshold, verify_threshold};
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
+pub fn assert_is_admin(env: &Env, admin: &Address, admin_key: &str) -> Result<(), ContractError> {
+    let stored_admin: Address = env.storage().instance().get(&Symbol::new(env, admin_key))
+        .ok_or(ContractError::NotFound)?;
+    if admin != &stored_admin {
+        return Err(ContractError::Unauthorized);
+    }
+    admin.require_auth();
+    Ok(())
+}
+
+pub fn assert_is_signer(env: &Env, signer: &Address, signers_key: &str) -> Result<(), ContractError> {
+    let signers: Vec<Address> = env.storage().instance().get(&Symbol::new(env, signers_key))
+        .ok_or(ContractError::NotInitialized)?;
+    if !signers.contains(signer) {
+        return Err(ContractError::Unauthorized);
+    }
+    signer.require_auth();
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{required_threshold, verify_threshold};
     use proptest::prelude::*;
-
-    // ── required_threshold ────────────────────────────────────────────────────
 
     #[test]
     fn threshold_zero_signers_is_full() {
-        // high_value_limit = 0 means "always use full threshold"
         assert_eq!(required_threshold(3, 0, 1_000), 3);
     }
 
@@ -148,7 +118,6 @@ mod tests {
         ) {
             let required = required_threshold(full_threshold, high_value_limit, value);
             let ok = verify_threshold(sig_count, full_threshold, high_value_limit, value);
-
             if sig_count >= required {
                 prop_assert!(ok.is_ok());
             } else {

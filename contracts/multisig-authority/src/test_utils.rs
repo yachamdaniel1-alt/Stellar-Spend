@@ -6,8 +6,8 @@ use soroban_sdk::{
 };
 
 use crate::{
-    MultisigAuthority, MultisigAuthorityClient, ProposalV1, DEFAULT_PROPOSAL_TTL_LEDGERS,
-    HIGH_VALUE_LIMIT_KEY, PROPOSALS_KEY, SCHEMA_KEY, SCHEMA_VERSION, SIGNERS_KEY, THRESHOLD_KEY,
+    DataKey, MultisigAuthority, MultisigAuthorityClient, ProposalV1,
+    DEFAULT_PROPOSAL_TTL_LEDGERS, SCHEMA_VERSION, SignersConfig,
 };
 
 /// Ledger sequence every fixture starts at.
@@ -20,6 +20,10 @@ pub const FIXTURE_ENTRY_TTL: u32 = 12_000_000;
 pub const DEFAULT_THRESHOLD: u32 = 2;
 /// High-value limit the default fixture initialises with.
 pub const DEFAULT_HIGH_VALUE_LIMIT: i128 = 1_000;
+
+/// The test-specific override storage keys.
+pub const TEST_THRESHOLD_KEY: &str = "test_threshold";
+pub const TEST_HIGH_VALUE_LIMIT_KEY: &str = "test_high_value_limit";
 
 pub struct MultisigTest {
     pub env: Env,
@@ -125,7 +129,7 @@ impl MultisigTest {
     }
 
     /// Read a raw instance-storage value from inside the contract's context.
-    pub fn read_storage<V>(&self, key: &Symbol) -> Option<V>
+    pub fn read_storage<V>(&self, key: &DataKey) -> Option<V>
     where
         V: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
     {
@@ -134,11 +138,11 @@ impl MultisigTest {
     }
 
     pub fn stored_schema(&self) -> Option<u32> {
-        self.read_storage(&Symbol::new(&self.env, SCHEMA_KEY))
+        self.read_storage(&DataKey::Schema)
     }
 }
 
-// ── Schema-upgrade harness (issue #817) ──────────────────────────────────────
+// ── Schema-upgrade harness (issue #817) ──────────────────────────────
 
 impl MultisigTest {
     /// Overwrite instance storage with a **schema v1** layout: same admin/signers/
@@ -152,15 +156,15 @@ impl MultisigTest {
 
         self.env.as_contract(&self.contract_id, || {
             let storage = self.env.storage().instance();
-            storage.set(&Symbol::new(&self.env, "admin"), &self.admin);
-            storage.set(&Symbol::new(&self.env, SIGNERS_KEY), &self.signers);
-            storage.set(&Symbol::new(&self.env, THRESHOLD_KEY), &DEFAULT_THRESHOLD);
-            storage.set(
-                &Symbol::new(&self.env, HIGH_VALUE_LIMIT_KEY),
-                &DEFAULT_HIGH_VALUE_LIMIT,
-            );
-            storage.set(&Symbol::new(&self.env, PROPOSALS_KEY), &map);
-            storage.set(&Symbol::new(&self.env, SCHEMA_KEY), &1u32);
+            let config = crate::SignersConfig {
+                admin: self.admin.clone(),
+                signers: self.signers.clone(),
+                threshold: DEFAULT_THRESHOLD,
+                high_value_limit: DEFAULT_HIGH_VALUE_LIMIT,
+            };
+            storage.set(&DataKey::Signers, &config);
+            storage.set(&DataKey::Proposals, &map);
+            storage.set(&DataKey::Schema, &1u32);
         });
     }
 
@@ -188,25 +192,14 @@ impl MultisigTest {
         let id = fixture.with_legacy_v1_state(&target);
         (fixture, id, target)
     }
-}
-
-/// Assert a freshly-initialised contract records the current schema version.
-pub fn assert_fresh_init_is_current(fixture: &MultisigTest) {
-    assert_eq!(
-        fixture.stored_schema(),
-        Some(SCHEMA_VERSION),
-        "init must persist the current schema version"
-    );
-}
 
     /// Override the default threshold for a re‑initialisation.
     pub fn override_threshold(&mut self, new_threshold: u32) {
-        // Stored in the test instance, used by reinit.
         self.env.as_contract(&self.contract_id, || {
             self.env
                 .storage()
                 .instance()
-                .set(&Symbol::new(&self.env, "test_threshold"), &new_threshold);
+                .set(&Symbol::new(&self.env, TEST_THRESHOLD_KEY), &new_threshold);
         });
     }
 
@@ -216,7 +209,7 @@ pub fn assert_fresh_init_is_current(fixture: &MultisigTest) {
             self.env
                 .storage()
                 .instance()
-                .set(&Symbol::new(&self.env, "test_high_value_limit"), &new_limit);
+                .set(&Symbol::new(&self.env, TEST_HIGH_VALUE_LIMIT_KEY), &new_limit);
         });
     }
 
@@ -226,31 +219,31 @@ pub fn assert_fresh_init_is_current(fixture: &MultisigTest) {
     pub fn reinit(&mut self) {
         // Clear the existing storage so init passes.
         self.env.as_contract(&self.contract_id, || {
-            let keys = vec![
-                Symbol::new(&self.env, "admin"),
-                Symbol::new(&self.env, "signers"),
-                Symbol::new(&self.env, "threshold"),
-                Symbol::new(&self.env, "hv_limit"),
-                Symbol::new(&self.env, "proposals"),
-                Symbol::new(&self.env, "schema"),
+            let keys = [
+                DataKey::Signers,
+                DataKey::Proposals,
+                DataKey::Schema,
             ];
             for key in keys {
                 self.env.storage().instance().remove(&key);
             }
+            // Also clear test override keys.
+            self.env.storage().instance().remove(&Symbol::new(&self.env, TEST_THRESHOLD_KEY));
+            self.env.storage().instance().remove(&Symbol::new(&self.env, TEST_HIGH_VALUE_LIMIT_KEY));
         });
 
         let threshold = self.env.as_contract(&self.contract_id, || {
             self.env
                 .storage()
                 .instance()
-                .get(&Symbol::new(&self.env, "test_threshold"))
+                .get(&Symbol::new(&self.env, TEST_THRESHOLD_KEY))
                 .unwrap_or(DEFAULT_THRESHOLD)
         });
         let high_value_limit = self.env.as_contract(&self.contract_id, || {
             self.env
                 .storage()
                 .instance()
-                .get(&Symbol::new(&self.env, "test_high_value_limit"))
+                .get(&Symbol::new(&self.env, TEST_HIGH_VALUE_LIMIT_KEY))
                 .unwrap_or(DEFAULT_HIGH_VALUE_LIMIT)
         });
 
@@ -261,4 +254,13 @@ pub fn assert_fresh_init_is_current(fixture: &MultisigTest) {
             &high_value_limit,
         );
     }
+}
+
+/// Assert a freshly-initialised contract records the current schema version.
+pub fn assert_fresh_init_is_current(fixture: &MultisigTest) {
+    assert_eq!(
+        fixture.stored_schema(),
+        Some(SCHEMA_VERSION),
+        "init must persist the current schema version"
+    );
 }

@@ -25,6 +25,11 @@ const STABLECOIN_FEE_PERCENTAGE = FEE_CONSTANTS.STABLECOIN_FEE_PERCENTAGE;
 const PAYCREST_FEE_PERCENTAGE = FEE_CONSTANTS.PAYCREST_FEE_PERCENTAGE;
 const NETWORK_FEE_XLM = FEE_CONSTANTS.NETWORK_FEE_XLM;
 
+function truncateTowardZero(value: number, decimals: number): string {
+  const factor = Math.pow(10, decimals);
+  return (Math.trunc(value * factor) / factor).toFixed(decimals);
+}
+
 export function calculateBridgeFee(amount: string, feeMethod: 'stablecoin' | 'native'): string {
   if (feeMethod === 'native') {
     return '0';
@@ -36,7 +41,7 @@ export function calculateBridgeFee(amount: string, feeMethod: 'stablecoin' | 'na
   }
 
   const fee = (amountNum * STABLECOIN_FEE_PERCENTAGE) / 100;
-  return fee.toFixed(6);
+  return truncateTowardZero(fee, 6);
 }
 
 export function calculateNetworkFee(feeMethod: 'stablecoin' | 'native'): string {
@@ -53,7 +58,7 @@ export function calculatePaycrestFee(receiveAmount: string): string {
   }
 
   const fee = (amountNum * PAYCREST_FEE_PERCENTAGE) / 100;
-  return fee.toFixed(2);
+  return truncateTowardZero(fee, 2);
 }
 
 export function calculateTotalFees(
@@ -69,7 +74,7 @@ export function calculateTotalFees(
   const contractFee = contractResourceFee ? parseFloat(contractResourceFee) || 0 : 0;
 
   const total = bridge + network + paycrest + contractFee;
-  return total.toFixed(6);
+  return truncateTowardZero(total, 6);
 }
 
 export function calculateAmountAfterFees(amount: string, totalFee: string): string {
@@ -101,7 +106,7 @@ export async function calculateAllFees(params: FeeCalculationParams): Promise<Fe
     currency,
     contractResourceFee,
   );
-  const amountAfterFees = calculateAmountAfterFees(amount, bridgeFee);
+  const amountAfterFees = calculateAmountAfterFees(amount, totalFee);
 
   return {
     bridgeFee,

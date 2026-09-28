@@ -1,5 +1,4 @@
-import { dal, DatabaseError } from '@/lib/db';
-import { notifyTransactionStatusUpdate } from '@/lib/notifications';
+import { createWebhookSystem } from '@/lib/webhook';
 
 export interface WebhookPayload {
   event: string;
@@ -16,47 +15,87 @@ export interface WebhookProcessResult {
   error?: string;
 }
 
+/**
+ * Legacy Webhook Service - Maintained for backward compatibility
+ * 
+ * This service now delegates to the new modular webhook system.
+ * New code should use the modular system directly.
+ */
 export class WebhookService {
+  private webhookSystem = createWebhookSystem();
+
+  /**
+   * Process Paycrest webhook (legacy method)
+   * 
+   * @deprecated Use the modular webhook system directly
+   */
   async processPaycrestWebhook(payload: WebhookPayload): Promise<WebhookProcessResult> {
     try {
+      // Validate payload
       this.validatePayload(payload);
 
-      const eventType = payload.event;
-      const orderId = payload.data?.id ?? payload.data?.orderId ?? '';
+      // Convert to webhook event format
+      const webhookEvent = {
+        event: payload.event,
+        data: payload.data,
+        timestamp: Date.now(),
+      };
 
-      if (!orderId) {
-        return { success: false, error: 'No order ID found in webhook' };
+      // Process through modular system
+      const results = await this.webhookSystem.processWebhook('paycrest', JSON.stringify(webhookEvent), {});
+
+      // Find successful result with transaction ID
+      const successfulResult = results.find(r => r.success && r.transactionId);
+      
+      if (successfulResult) {
+        return {
+          success: true,
+          transactionId: successfulResult.transactionId,
+        };
       }
 
-      const transaction = await dal.getByPayoutOrderId(orderId);
-      if (!transaction) {
-        return { success: false, error: 'No transaction found for order' };
-      }
-
-      const updates = this.mapEventToUpdates(eventType);
-      if (!updates) {
-        return { success: true, transactionId: transaction.id };
-      }
-
-      await dal.update(transaction.id, updates);
-      const updated = await dal.getById(transaction.id);
-
-      if (updated) {
-        await notifyTransactionStatusUpdate({
-          transaction: updated,
-          previousStatus: transaction.status,
-          previousPayoutStatus: transaction.payoutStatus,
-          source: 'webhook',
-        });
-      }
-
-      return { success: true, transactionId: transaction.id };
-    } catch (err) {
-      if (err instanceof DatabaseError) {
-        return { success: false, error: err.message };
-      }
-      return { success: false, error: 'Failed to process webhook' };
+      // Find any error
+      const errorResult = results.find(r => r.error);
+      return {
+        success: false,
+        error: errorResult?.error || 'Failed to process webhook',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
+  }
+
+  /**
+   * Process webhook using the new modular system
+   */
+  async processWebhook(
+    providerId: string,
+    rawBody: string,
+    headers: Record<string, string>,
+  ): Promise<WebhookProcessResult[]> {
+    return this.webhookSystem.processWebhook(providerId, rawBody, headers);
+  }
+
+  /**
+   * Validate webhook signature using the new modular system
+   */
+  async validateWebhook(
+    providerId: string,
+    rawBody: string,
+    signature: string,
+    headers: Record<string, string>,
+  ): Promise<{ valid: boolean; reason?: string }> {
+    return this.webhookSystem.validateWebhook(providerId, rawBody, signature, headers);
+  }
+
+  /**
+   * Get the underlying webhook factory for advanced usage
+   */
+  getWebhookFactory() {
+    return this.webhookSystem;
   }
 
   private validatePayload(payload: WebhookPayload): void {
@@ -70,21 +109,6 @@ export class WebhookService {
 
     if (!payload.data || typeof payload.data !== 'object') {
       throw new Error('Webhook data is required');
-    }
-  }
-
-  private mapEventToUpdates(eventType: string): Record<string, unknown> | null {
-    switch (eventType) {
-      case 'payment_order.settled':
-        return { status: 'completed', payoutStatus: 'settled' };
-      case 'payment_order.pending':
-        return { payoutStatus: 'pending' };
-      case 'payment_order.refunded':
-        return { status: 'failed', payoutStatus: 'refunded', error: 'Refunded by Paycrest' };
-      case 'payment_order.expired':
-        return { status: 'failed', payoutStatus: 'expired', error: 'Order expired' };
-      default:
-        return null;
     }
   }
 }

@@ -49,10 +49,8 @@ mod create;
 mod refund;
 mod release;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map, String};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map};
 use stellar_spend_shared::{errors::ContractError, validation::check_schema_version};
-use shared::EventFormat;
-use dispute::{DisputeHandler, DisputeError, DisputeStatus};
 
 // ── Sub-modules (issue #812) ──────────────────────────────────────────────────
 
@@ -94,6 +92,8 @@ pub enum DataKey {
     Schema,
     /// Reentrancy guard: `true` while a release/refund is executing.
     Lock,
+    /// `Map<u64, Dispute>` of all disputes, keyed by escrow id.
+    Disputes,
 }
 
 #[contracttype]
@@ -104,6 +104,30 @@ pub enum EscrowStatus {
     Disputed,
     Resolved,
     Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowDeposit {
+    pub depositor: Address,
+    pub amount: i128,
+    pub bridge_address: Address,
+    pub timestamp: u64,
+    pub timeout_ledger: u32,
+    pub status: EscrowStatus,
+    pub fee_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowDepositV1 {
+    pub depositor: Address,
+    pub amount: i128,
+    pub bridge_address: Address,
+    pub timestamp: u64,
+    pub timeout_ledger: u32,
+    pub released: bool,
+    pub refunded: bool,
 }
 
 #[contract]
@@ -130,8 +154,8 @@ impl EscrowContract {
         storage.set(&DataKey::Lock, &false);
         Self::bump_instance_ttl(&env);
 
-        // Emit standardized event
-        EventFormat::emit_admin_initialized(&env, settlement_authority);
+        env.events()
+            .publish((symbol_short!("init"),), settlement_authority);
         Ok(())
     }
 
@@ -171,6 +195,14 @@ impl EscrowContract {
         release::load_deposits(&env)?
             .get(deposit_id)
             .ok_or(ContractError::NotFound)
+    }
+
+    /// The stored schema version.
+    pub fn schema_version(env: Env) -> Result<u32, ContractError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Schema)
+            .ok_or(ContractError::NotInitialized)
     }
 
     /// Update the refund timeout applied to *future* deposits. Authority only.
@@ -225,9 +257,6 @@ impl EscrowContract {
         }
 
         if stored == 1 {
-            // v1 -> v2: widen every record with `fee_bps`, defaulting to 0. Reading
-            // the map as its v1 type is what makes the old entries decodable at all;
-            // reading it as v2 would fail on the missing field.
             let old: Map<u64, EscrowDepositV1> = env
                 .storage()
                 .instance()
@@ -236,6 +265,13 @@ impl EscrowContract {
 
             let mut migrated: Map<u64, EscrowDeposit> = Map::new(&env);
             for (id, v1) in old.iter() {
+                let status = if v1.released {
+                    EscrowStatus::Resolved
+                } else if v1.refunded {
+                    EscrowStatus::Cancelled
+                } else {
+                    EscrowStatus::Pending
+                };
                 migrated.set(
                     id,
                     EscrowDeposit {
@@ -244,8 +280,7 @@ impl EscrowContract {
                         bridge_address: v1.bridge_address,
                         timestamp: v1.timestamp,
                         timeout_ledger: v1.timeout_ledger,
-                        released: v1.released,
-                        refunded: v1.refunded,
+                        status,
                         fee_bps: 0,
                     },
                 );
@@ -277,3 +312,10 @@ impl EscrowContract {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     }
 }
+
+#[cfg(feature = "testutils")]
+pub mod test_utils;
+
+#[cfg(test)]
+mod test;
+mod tests;

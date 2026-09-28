@@ -2,10 +2,11 @@
 //!
 //! All setup comes from [`crate::test_utils`] (issue #818).
 use stellar_spend_shared::errors::ContractError;
+use soroban_sdk::{Address, Vec};
 
 use crate::test_utils::{assert_fresh_init_is_current, TreasuryTest};
 use crate::{MAX_FEE_TIERS, MAX_SINGLE_FEE_BP, SCHEMA_VERSION};
-use soroban_sdk::testutils::Events as _;
+use soroban_sdk::testutils::{Address as _, Events as _};
 
 // ── Initialisation ───────────────────────────────────────────────────────────
 
@@ -47,7 +48,7 @@ fn init_persists_admin_treasury_and_schedule() {
 fn init_is_rejected_twice() {
     let t = TreasuryTest::setup();
     assert_eq!(
-        t.client().try_init(&t.outsider, &t.outsider),
+        t.client().try_initialize(&t.outsider),
         Err(Ok(ContractError::AlreadyInitialized))
     );
 }
@@ -242,6 +243,7 @@ fn set_fee_schedule_caps_the_number_of_tiers() {
 #[test]
 fn route_to_treasury_rejects_non_positive_amounts() {
     let t = TreasuryTest::setup();
+    t.client().deposit(&1000);
     assert_eq!(
         t.client().try_route_to_treasury(&0),
         Err(Ok(ContractError::InvalidAmount))
@@ -323,7 +325,7 @@ fn treasury_fee_schedule_obeys_the_monotonic_invariant() {
         let expected = schedule
             .iter()
             .filter(|(threshold, _)| (*threshold as i128) <= amount)
-            .map(|(_, bps)| *bps)
+            .map(|(_, bps)| bps)
             .last()
             .unwrap_or(0);
 
@@ -452,17 +454,18 @@ fn init_emits_event_with_admin_and_treasury() {
     use soroban_sdk::symbol_short;
 
     let t = TreasuryTest::registered();
-    t.client().init(&t.admin, &t.treasury);
+    t.client().initialize(&t.admin);
+    t.client().update_treasury(&t.treasury);
 
     let events = t.env.events().all();
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 1, "only update_treasury emits an event");
     let event = events.get(0).unwrap();
     assert_event(
         event,
         &t.contract_id,
         &t.env,
-        symbol_short!("init"),
-        (t.admin.clone(), t.treasury.clone()),
+        symbol_short!("trsy"),
+        t.treasury.clone(),
     );
 }
 
@@ -480,7 +483,7 @@ fn collect_fee_emits_event_with_amount_fee_recipient() {
         event,
         &t.contract_id,
         &t.env,
-        symbol_short!("collect"),
+        symbol_short!("coll"),
         (1_000_000i128, fee, t.outsider.clone()),
     );
 }
@@ -499,7 +502,7 @@ fn set_fee_schedule_emits_event_with_tier_and_basis_points() {
         event,
         &t.contract_id,
         &t.env,
-        symbol_short!("schedule"),
+        symbol_short!("sched"),
         (5_000_000i128, 30u32),
     );
 }
@@ -537,7 +540,7 @@ fn update_treasury_emits_event_with_new_address() {
         event,
         &t.contract_id,
         &t.env,
-        symbol_short!("treasury"),
+        symbol_short!("trsy"),
         t.outsider.clone(),
     );
 }
@@ -547,10 +550,11 @@ fn route_to_treasury_emits_event_with_amount_and_treasury_address() {
     use soroban_sdk::symbol_short;
 
     let t = TreasuryTest::setup();
+    t.client().deposit(&1000);
 
     t.client().route_to_treasury(&999);
     let all_events = t.env.events().all();
-    let event = all_events.get(0).unwrap();
+    let event = all_events.get(all_events.len() - 1).unwrap();
 
     assert_event(
         event,
@@ -575,7 +579,7 @@ fn migrate_emits_event_with_from_and_to_schema_versions() {
         event,
         &t.contract_id,
         &t.env,
-        symbol_short!("migrate"),
+        symbol_short!("migrt"),
         (1u32, SCHEMA_VERSION),
     );
 }
@@ -585,7 +589,7 @@ fn migrate_emits_event_with_from_and_to_schema_versions() {
 #[test]
 fn collect_fee_batch_sums_fees_and_writes_total_once() {
     let t = TreasuryTest::setup();
-    let amounts = vec![&t.env, 1_000_000, 5_000_000, 10_000_000];
+    let amounts = soroban_sdk::vec![&t.env, 1_000_000, 5_000_000, 10_000_000];
     let recipient = Address::generate(&t.env);
 
     // Each individual fee: 1M→2_500 (25bp), 5M→12_500 (25bp), 10M→10_000 (10bp)
@@ -604,7 +608,7 @@ fn collect_fee_batch_sums_fees_and_writes_total_once() {
 #[test]
 fn collect_fee_batch_works_with_a_single_amount() {
     let t = TreasuryTest::setup();
-    let amounts = vec![&t.env, 1_000_000];
+    let amounts = soroban_sdk::vec![&t.env, 1_000_000];
     let recipient = Address::generate(&t.env);
 
     let fees = t.client().collect_fee_batch(&amounts, &recipient);
@@ -616,7 +620,7 @@ fn collect_fee_batch_works_with_a_single_amount() {
 #[test]
 fn collect_fee_batch_rejects_non_positive_amounts() {
     let t = TreasuryTest::setup();
-    let amounts = vec![&t.env, 1_000_000, 0, 5_000_000];
+    let amounts = soroban_sdk::vec![&t.env, 1_000_000, 0, 5_000_000];
     let recipient = Address::generate(&t.env);
 
     assert_eq!(
@@ -630,7 +634,7 @@ fn collect_fee_batch_reports_overflow_across_items() {
     let t = TreasuryTest::setup();
     // Force a 100% fee to make amounts directly equal fees.
     t.force_schedule(&[(0, 10_000)]);
-    let amounts = vec![&t.env, i128::MAX, 1];
+    let amounts = soroban_sdk::vec![&t.env, i128::MAX, 1];
     let recipient = Address::generate(&t.env);
 
     assert_eq!(
@@ -644,7 +648,7 @@ fn collect_fee_batch_emits_a_single_event_with_summary() {
     use soroban_sdk::symbol_short;
 
     let t = TreasuryTest::setup();
-    let amounts = vec![&t.env, 1_000_000, 5_000_000];
+    let amounts = soroban_sdk::vec![&t.env, 1_000_000, 5_000_000];
     let recipient = Address::generate(&t.env);
 
     t.client().collect_fee_batch(&amounts, &recipient);
@@ -656,7 +660,7 @@ fn collect_fee_batch_emits_a_single_event_with_summary() {
         event,
         &t.contract_id,
         &t.env,
-        symbol_short!("collect_batch"),
+        symbol_short!("cbatch"),
         (recipient, 15_000i128, 2u32),
     );
 }
@@ -671,7 +675,7 @@ fn collect_fee_and_collect_fee_batch_accumulate_total_correctly() {
     assert_eq!(t.client().total_collected(), fee1);
 
     // Then a batch of three fees.
-    let amounts = vec![&t.env, 5_000_000, 10_000_000, 20_000_000];
+    let amounts = soroban_sdk::vec![&t.env, 5_000_000, 10_000_000, 20_000_000];
     let batch_fees = t.client().collect_fee_batch(&amounts, &recipient);
     let batch_total: i128 = batch_fees.iter().sum();
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { checkRateLimit, InMemoryRateLimitStore } from '@/lib/rate-limiting';
+import { checkRateLimit, InMemoryRateLimitStore } from '@/lib/rateLimiter';
 import { logger } from '@/lib/logger';
 
 // Global rate limit store instance

@@ -6,7 +6,10 @@ use stellar_spend_shared::{
     validation::{check_schema_version, require_basis_points, require_string_len, MAX_BASIS_POINTS},
 };
 
-use crate::{DataKey, FeeManagerContract, MAX_DEFAULT_FEE_BP, SCHEMA_VERSION};
+use crate::{DataKey, MAX_DEFAULT_FEE_BP, SCHEMA_VERSION};
+
+/// Admin operations handler
+pub struct Admin;
 
 /// Per-invocation cache of instance storage reads.
 ///
@@ -80,7 +83,7 @@ impl InvocationCache {
     }
 }
 
-impl FeeManagerContract {
+impl Admin {
     /// Initialise with an admin and a starting fee rate.
     pub fn init(env: Env, admin: Address, default_fee_bp: u32) -> Result<(), ContractError> {
         if env.storage().instance().has(&DataKey::Schema) {

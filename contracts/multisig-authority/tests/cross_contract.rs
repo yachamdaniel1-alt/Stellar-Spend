@@ -66,7 +66,8 @@ impl CrossFixture {
         // Deploy treasury with multisig as admin
         let treasury_id = env.register(treasury::TreasuryContract, ());
         let treasury_client = treasury::TreasuryContractClient::new(&env, &treasury_id);
-        treasury_client.init(&multisig_id, &treasury_addr);
+        treasury_client.initialize(&multisig_id);
+        treasury_client.update_treasury(&treasury_addr);
 
         // Deploy escrow with multisig as settlement authority
         let escrow_id = env.register(escrow::EscrowContract, ());

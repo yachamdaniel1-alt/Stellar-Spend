@@ -134,21 +134,32 @@ describe('WebhookService', () => {
   });
 
   it('should validate webhook payload', async () => {
-    await expect(service.processPaycrestWebhook(null as unknown as Parameters<typeof service.processPaycrestWebhook>[0])).rejects.toThrow(
-      'Invalid webhook payload',
-    );
+    const result = await service.processPaycrestWebhook(null as unknown as Parameters<typeof service.processPaycrestWebhook>[0]);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid webhook payload');
   });
 
   it('should require event type', async () => {
-    await expect(service.processPaycrestWebhook({ event: '', data: {} })).rejects.toThrow(
-      'Event type is required',
-    );
+    const result = await service.processPaycrestWebhook({ event: '', data: {} });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Event type is required');
   });
 
   it('should require webhook data', async () => {
-    await expect(
-      service.processPaycrestWebhook({ event: 'test', data: null as unknown as Record<string, unknown> }),
-    ).rejects.toThrow('Webhook data is required');
+    const result = await service.processPaycrestWebhook({ event: 'test', data: null as unknown as Record<string, unknown> });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Webhook data is required');
+  });
+
+  it('should support new modular webhook processing', async () => {
+    const results = await service.processWebhook('paycrest', '{"event":"test","data":{}}', {});
+    expect(Array.isArray(results)).toBe(true);
+  });
+
+  it('should support webhook validation', async () => {
+    const validation = await service.validateWebhook('paycrest', 'test', 'signature', {});
+    expect(validation).toHaveProperty('valid');
+    expect(validation).toHaveProperty('reason');
   });
 });
 

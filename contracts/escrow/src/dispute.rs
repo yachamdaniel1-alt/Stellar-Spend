@@ -4,16 +4,14 @@
 //! `set_timeout` (admin) and `can_refund` (read-only) entrypoints that relate to
 //! the lifecycle of a contested or time-locked deposit.
 
-use soroban_sdk::{symbol_short, Address, Env, panic_with_error};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, String};
 use stellar_spend_shared::errors::ContractError;
 
 use crate::release::{load_deposits, require_admin};
-use crate::{
-    DataKey, INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD, MAX_TIMEOUT_LEDGERS,
-    MIN_TIMEOUT_LEDGERS,
-};
+use crate::{DataKey, EscrowDeposit, EscrowStatus, INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD, MAX_TIMEOUT_LEDGERS, MIN_TIMEOUT_LEDGERS};
 
 /// Dispute error types
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisputeError {
     AlreadyResolved = 1,
@@ -25,6 +23,7 @@ pub enum DisputeError {
 }
 
 /// Dispute status
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisputeStatus {
     None,
@@ -36,6 +35,8 @@ pub enum DisputeStatus {
 }
 
 /// Dispute record
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Dispute {
     pub id: u64,
     pub escrow_id: u64,
@@ -76,7 +77,7 @@ pub fn set_timeout(env: &Env, timeout_ledgers: u32) -> Result<(), ContractError>
 pub fn can_refund(env: &Env, deposit_id: u64) -> Result<bool, ContractError> {
     let deposits = load_deposits(env)?;
     let deposit = deposits.get(deposit_id).ok_or(ContractError::NotFound)?;
-    if deposit.released || deposit.refunded {
+    if matches!(deposit.status, EscrowStatus::Resolved | EscrowStatus::Cancelled) {
         return Ok(false);
     }
     Ok(env.ledger().sequence() >= deposit.timeout_ledger)
@@ -102,7 +103,7 @@ impl DisputeHandler {
 
         // Create dispute
         let dispute = Dispute {
-            id: env.ledger().sequence(),
+            id: env.ledger().sequence() as u64,
             escrow_id,
             initiator: initiator.clone(),
             respondent: respondent.clone(),
@@ -116,6 +117,7 @@ impl DisputeHandler {
 
         // Store dispute
         Self::store_dispute(env, &dispute);
+        Self::update_escrow_status(env, escrow_id, EscrowStatus::Disputed);
 
         // Emit event
         env.events().publish(
@@ -153,6 +155,7 @@ impl DisputeHandler {
         dispute.resolution_notes = notes;
 
         Self::store_dispute(env, &dispute);
+        Self::update_escrow_status(env, escrow_id, EscrowStatus::Resolved);
 
         env.events().publish(
             ("dispute_resolved_buyer", "v1"),
@@ -186,6 +189,7 @@ impl DisputeHandler {
         dispute.resolution_notes = notes;
 
         Self::store_dispute(env, &dispute);
+        Self::update_escrow_status(env, escrow_id, EscrowStatus::Resolved);
 
         env.events().publish(
             ("dispute_resolved_seller", "v1"),
@@ -219,6 +223,7 @@ impl DisputeHandler {
         dispute.resolution_notes = notes;
 
         Self::store_dispute(env, &dispute);
+        Self::update_escrow_status(env, escrow_id, EscrowStatus::Resolved);
 
         env.events().publish(
             ("dispute_dismissed", "v1"),
@@ -242,18 +247,28 @@ impl DisputeHandler {
 
     /// Store dispute (implementation specific)
     fn store_dispute(env: &Env, dispute: &Dispute) {
-        let key = format!("dispute_{}", dispute.escrow_id);
-        env.storage().set(&String::from_str(env, &key), dispute);
+        let mut disputes: Map<u64, Dispute> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Disputes)
+            .unwrap_or_else(|| Map::new(env));
+        disputes.set(dispute.escrow_id, dispute.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::Disputes, &disputes);
     }
 
     /// Load dispute (implementation specific)
     fn load_dispute(env: &Env, escrow_id: u64) -> Option<Dispute> {
-        let key = format!("dispute_{}", escrow_id);
-        env.storage().get(&String::from_str(env, &key))
+        let disputes: Map<u64, Dispute> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Disputes)?;
+        disputes.get(escrow_id)
     }
 
     /// Authorize resolver
-    fn authorize_resolver(env: &Env, resolver: &Address) -> Result<(), DisputeError> {
+    fn authorize_resolver(_env: &Env, resolver: &Address) -> Result<(), DisputeError> {
         resolver.require_auth();
         Ok(())
     }
@@ -262,6 +277,19 @@ impl DisputeHandler {
     // Legacy code paths to be removed (dead code audit)
     // These are confirmed unreachable and will be removed
     // ================================================================
+
+    fn update_escrow_status(env: &Env, escrow_id: u64, status: EscrowStatus) {
+        let mut deposits: Map<u64, EscrowDeposit> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Deposits)
+            .unwrap_or_else(|| Map::new(env));
+        if let Some(mut deposit) = deposits.get(escrow_id) {
+            deposit.status = status;
+            deposits.set(escrow_id, deposit);
+            env.storage().instance().set(&DataKey::Deposits, &deposits);
+        }
+    }
 
     /// Legacy: This branch is never reached because disputes are created
     /// with proper validation. Keeping this as a reference for the dead code audit.

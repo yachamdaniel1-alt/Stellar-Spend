@@ -7,7 +7,7 @@
 use soroban_sdk::{symbol_short, Address, Env};
 use stellar_spend_shared::errors::ContractError;
 
-use crate::{DataKey, INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD};
+use crate::{DataKey, EscrowStatus, INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD};
 
 /// Release a deposit to `recipient`. Settlement authority only.
 ///
@@ -27,14 +27,14 @@ pub fn release(env: &Env, deposit_id: u64, recipient: Address) -> Result<i128, C
         }
     };
 
-    if deposit.released || deposit.refunded {
+    if matches!(deposit.status, EscrowStatus::Resolved | EscrowStatus::Cancelled) {
         release_lock(env);
         return Err(ContractError::AlreadyProcessed);
     }
 
     // ── EFFECT ─────────────────────────────────────────────────────────
     let amount = deposit.amount;
-    deposit.released = true;
+    deposit.status = EscrowStatus::Resolved;
     deposits.set(deposit_id, deposit);
     env.storage().instance().set(&DataKey::Deposits, &deposits);
     env.storage()

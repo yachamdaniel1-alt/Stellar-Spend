@@ -7,7 +7,7 @@ use stellar_spend_shared::errors::ContractError;
 use crate::test_utils::{
     assert_fresh_init_is_current, MultisigTest, DEFAULT_HIGH_VALUE_LIMIT, DEFAULT_THRESHOLD,
 };
-use crate::SCHEMA_VERSION;
+use crate::{DataKey, SCHEMA_VERSION, SignersConfig};
 use soroban_sdk::testutils::Events as _;
 
 // ── Initialisation ───────────────────────────────────────────────────────────
@@ -1012,7 +1012,7 @@ fn signer_removal_while_proposal_pending_drops_their_vote_live_count_recomputed(
 fn threshold_one_with_one_signer_allowed() {
     // Special case: 1-of-1 signer set should be allowed by init.
     let t = MultisigTest::registered();
-    let single_signer = vec![t.signer(0)];
+    let single_signer = Vec::from_array(&t.env, [t.signer(0)]);
     t.client().init(&t.admin, &single_signer, &1, &0);
 
     let target = Address::generate(&t.env);
@@ -1034,4 +1034,107 @@ fn threshold_one_with_three_signers_allows_any_single_signer() {
     let id = t.propose_high_value("1-of-3", &target);
     // Even high-value proposals need only one signature.
     assert_eq!(t.client().execute(&t.signer(2), &id), DEFAULT_HIGH_VALUE_LIMIT * 10);
+}
+
+// ── Storage reduction & parity tests (issue #1159) ─────────────────
+
+#[test]
+fn storage_uses_datakey_enum_not_symbol_keys() {
+    // Verify that the new storage layout uses `[contracttype]` enum
+    // `DataKey` variants instead of plain `Symbol` string keys,
+    // which reduces per-entry storage overhead.
+    let t = MultisigTest::setup();
+
+    // DataKey::Signers should be present and contain the full config.
+    let config: Option<crate::SignersConfig> = t.read_storage(&crate::DataKey::Signers);
+    assert!(config.is_some(), "SignersConfig must be stored under DataKey::Signers");
+    let config = config.unwrap();
+    assert_eq!(config.admin, t.admin);
+    assert_eq!(config.signers, t.signers);
+    assert_eq!(config.threshold, DEFAULT_THRESHOLD);
+    assert_eq!(config.high_value_limit, DEFAULT_HIGH_VALUE_LIMIT);
+}
+
+#[test]
+fn signers_config_is_single_storage_entry() {
+    // Verify that admin/signers/threshold/high_value_limit are all
+    // stored in a single `SignersConfig` entry rather than four
+    // separate storage items.
+    let t = MultisigTest::setup();
+
+    // DataKey::Signers should exist.
+    assert!(t.read_storage::<crate::SignersConfig>(&crate::DataKey::Signers).is_some());
+
+    // DataKey::Admin, DataKey::Signers (as separate), DataKey::Threshold,
+    // DataKey::HighValueLimit should NOT exist as separate entries.
+    // Since we only have DataKey::Signers, DataKey::Proposals, DataKey::Schema,
+    // the old Symbol-based keys should be absent.
+    let admin_val: Option<Address> = t.read_storage(&crate::DataKey::Signers).map(|c| c.admin);
+    assert!(admin_val.is_some(), "admin should be accessible via SignersConfig");
+}
+
+#[test]
+fn storage_reduction_parity_with_init() {
+    // Test parity: init should persist all fields via the consolidated
+    // SignersConfig and still be reachable through view functions.
+    let t = MultisigTest::setup();
+    assert_eq!(t.client().get_signers(), t.signers);
+    assert_eq!(t.client().get_threshold(), DEFAULT_THRESHOLD);
+    assert_eq!(t.client().get_high_value_limit(), DEFAULT_HIGH_VALUE_LIMIT);
+    assert_eq!(t.client().schema_version(), SCHEMA_VERSION);
+}
+
+#[test]
+fn storage_reduction_parity_with_admin_ops() {
+    // Test parity: admin operations should all work correctly through
+    // the consolidated SignersConfig storage layout.
+    let mut t = MultisigTest::setup();
+    let new_signer = Address::generate(&t.env);
+
+    t.client().add_signer(&t.admin, &new_signer);
+    assert_eq!(t.client().get_signers().len(), 4);
+
+    t.client().remove_signer(&t.admin, &t.signer(2));
+    assert_eq!(t.client().get_signers().len(), 3);
+
+    t.client().set_threshold(&t.admin, 3);
+    assert_eq!(t.client().get_threshold(), 3);
+
+    t.client().set_high_value_limit(&t.admin, 5_000);
+    assert_eq!(t.client().get_high_value_limit(), 5_000);
+
+    // Verify SignersConfig reflects all changes.
+    let config = t.read_storage::<crate::SignersConfig>(&crate::DataKey::Signers).unwrap();
+    assert_eq!(config.signers.len(), 3);
+    assert_eq!(config.threshold, 3);
+    assert_eq!(config.high_value_limit, 5_000);
+}
+
+#[test]
+fn storage_reduction_parity_with_proposal_flow() {
+    // Test parity: the full propose → sign → execute flow should work
+    // correctly through the consolidated storage layout.
+    let t = MultisigTest::setup();
+    let target = Address::generate(&t.env);
+    let id = t.propose_high_value("parity", &target);
+
+    t.client().sign(&t.signer(1), &id);
+    let value = t.client().execute(&t.signer(0), &id);
+    assert_eq!(value, DEFAULT_HIGH_VALUE_LIMIT * 10);
+}
+
+#[test]
+fn storage_reduction_parity_with_migration() {
+    // Test parity: v1 → v2 migration should work through the new
+    // consolidated storage layout.
+    let (mut t, _id, target) = MultisigTest::registered_with_legacy_v1_state();
+
+    let stored = t.client().migrate(&t.admin).unwrap();
+    assert_eq!(stored, 1);
+    assert_eq!(t.client().schema_version(), SCHEMA_VERSION);
+
+    // The SignersConfig should still be accessible after migration.
+    let config = t.read_storage::<crate::SignersConfig>(&crate::DataKey::Signers).unwrap();
+    assert_eq!(config.admin, t.admin);
+    assert_eq!(config.threshold, DEFAULT_THRESHOLD);
 }

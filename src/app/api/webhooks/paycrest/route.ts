@@ -2,12 +2,10 @@ import { NextResponse } from 'next/server';
 import { env } from '@/lib/env';
 import { ErrorHandler } from '@/lib/error-handler';
 import { generateRequestId, createRequestLogger } from '@/lib/offramp';
-import { dal, DatabaseError } from '@/lib/db';
-import { enqueue } from '@/lib/webhook';
-import { verifyWebhookSignature, createNonceTable } from '@/lib/webhookVerify';
-import { notifyTransactionStatusUpdate } from '@/lib/notifications';
+import { createNonceTable } from '@/lib/webhookVerify';
 import { withIdempotency } from '@/lib/idempotency';
 import { logger } from '@/lib/logger';
+import { createWebhookSystem } from '@/lib/webhook';
 import type { NextRequest } from 'next/server';
 
 const SENSITIVE_HEADERS = new Set(['authorization', 'x-paycrest-signature']);
@@ -44,12 +42,25 @@ async function handleWebhook(request: NextRequest): Promise<NextResponse> {
     return ErrorHandler.unauthorized('Missing required security headers');
   }
 
-  const verification = await verifyWebhookSignature(
+  // Create webhook system
+  const webhookSystem = createWebhookSystem({
+    paycrest: {
+      webhookSecret: env.server.PAYCREST_WEBHOOK_SECRET,
+      timestampToleranceMs: 5 * 60 * 1000, // 5 minutes
+      requireNonce: true,
+    },
+  });
+
+  // Validate webhook using modular system
+  const verification = await webhookSystem.validateWebhook(
+    'paycrest',
     rawBody,
     signature,
-    env.server.PAYCREST_WEBHOOK_SECRET,
-    timestamp,
-    nonce,
+    {
+      'x-paycrest-timestamp': timestamp,
+      'x-paycrest-nonce': nonce,
+      ...Object.fromEntries(request.headers.entries()),
+    },
   );
 
   if (!verification.valid) {
@@ -57,6 +68,8 @@ async function handleWebhook(request: NextRequest): Promise<NextResponse> {
     return ErrorHandler.unauthorized(verification.reason ?? 'Invalid signature');
   }
 
+  // Enqueue for async processing (using existing webhook dispatcher)
+  const { enqueue } = await import('@/lib/webhook');
   enqueue(
     {
       headers: redactHeaders(request.headers),
@@ -69,54 +82,38 @@ async function handleWebhook(request: NextRequest): Promise<NextResponse> {
   });
 
   try {
-    const payload = JSON.parse(rawBody);
-    const eventType: string = payload?.event ?? '';
-    const orderId: string = payload?.data?.id ?? payload?.data?.orderId ?? '';
+    // Process webhook using modular system
+    const results = await webhookSystem.processWebhook('paycrest', rawBody, {
+      'x-paycrest-timestamp': timestamp,
+      'x-paycrest-nonce': nonce,
+      ...Object.fromEntries(request.headers.entries()),
+    });
 
-    logger.info('webhook.event_received', { requestId, eventType, orderId });
+    // Check processing results
+    const successfulResults = results.filter(r => r.success);
+    const failedResults = results.filter(r => !r.success);
 
-    const transaction = await dal.getByPayoutOrderId(orderId);
-    if (!transaction) {
-      logger.info('webhook.no_transaction', { requestId, orderId });
-      reqLogger.logSuccess(200);
-      return NextResponse.json({ received: true, orderId });
-    }
-
-    let updates: Record<string, unknown> | null = null;
-    if (eventType === 'payment_order.settled') {
-      updates = { status: 'completed', payoutStatus: 'settled' };
-    } else if (eventType === 'payment_order.pending') {
-      updates = { payoutStatus: 'pending' };
-    } else if (eventType === 'payment_order.refunded') {
-      updates = { status: 'failed', payoutStatus: 'refunded', error: 'Refunded by Paycrest' };
-    } else if (eventType === 'payment_order.expired') {
-      updates = { status: 'failed', payoutStatus: 'expired', error: 'Order expired' };
-    } else {
-      logger.warn('webhook.unhandled_event', { requestId, eventType });
-    }
-
-    if (updates) {
-      await dal.update(transaction.id, updates);
-      const updated = await dal.getById(transaction.id);
-      if (updated) {
-        await notifyTransactionStatusUpdate({
-          transaction: updated,
-          previousStatus: transaction.status,
-          previousPayoutStatus: transaction.payoutStatus,
-          source: 'webhook',
-        });
-      }
+    if (failedResults.length > 0) {
+      const errors = failedResults.map(r => r.error).filter(Boolean);
+      logger.warn('webhook.partial_failure', {
+        requestId,
+        successful: successfulResults.length,
+        failed: failedResults.length,
+        errors,
+      });
     }
 
     reqLogger.logSuccess(200);
-    return NextResponse.json({ received: true });
-  } catch (err) {
-    if (err instanceof DatabaseError) {
-      reqLogger.logError(500, err.message);
-      return ErrorHandler.serverError(err);
-    }
-    reqLogger.logError(400, 'Failed to parse webhook payload');
-    return ErrorHandler.validation('Malformed JSON payload');
+    return NextResponse.json({
+      received: true,
+      processed: successfulResults.length,
+      failed: failedResults.length,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('webhook.processing_error', { requestId, error: errorMessage }, error);
+    reqLogger.logError(500, errorMessage);
+    return ErrorHandler.serverError('Failed to process webhook');
   }
 }
 

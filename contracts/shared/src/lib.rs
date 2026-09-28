@@ -7,8 +7,8 @@ pub mod policy;
 pub mod token;
 pub mod validation;
 
-pub use events::EventFormat;
-pub use events::topics;
+pub use events::emit_admin_initialized;
 pub use auth::AdminAuth;
 pub use auth::AuthError;
+pub use errors::ContractError;
 pub use errors::SharedError;

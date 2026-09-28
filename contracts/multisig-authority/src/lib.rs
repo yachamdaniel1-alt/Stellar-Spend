@@ -7,11 +7,9 @@
 //! needs the full threshold. Setting the limit to `0` requires the full threshold for
 //! every proposal.
 //!
-//! Signer/admin/threshold checks delegate to the shared
-//! [`stellar_spend_shared::auth`] helpers, which look up their storage entries by a
-//! plain string key — this contract therefore stores `admin`/`signers` under
-//! `Symbol::new(&env, "admin" | "signers")` rather than a `#[contracttype]` enum, so
-//! those helpers can find them.
+//! Signer/admin/threshold state is consolidated into a single [`SignersConfig`]
+//! storage entry keyed by the [`DataKey`] enum, reducing redundant storage
+//! writes compared to the previous four separate plain-string-key entries.
 //!
 //! # Dead code removed (issue #815)
 //!
@@ -27,10 +25,10 @@
 
 use soroban_sdk::{
     contract, contractimpl, contractmeta, contracttype, symbol_short, vec, Address, BytesN, Env,
-    Map, String, Symbol, Vec,
+    Map, String, Vec,
 };
 use stellar_spend_shared::{
-    auth::{assert_is_admin, assert_is_signer, verify_threshold},
+    auth::verify_threshold,
     errors::ContractError,
     validation::{
         check_schema_version, require_non_negative_amount, require_string_len,
@@ -41,17 +39,31 @@ use stellar_spend_shared::{
 contractmeta!(key = "version", val = "1.0.0");
 contractmeta!(key = "contract", val = "stellar-spend-multisig-authority");
 
-// ── Storage keys ──────────────────────────────────────────────────────────────
+// ── Storage keys ──────────────────────────────────────────────────────
 //
-// Plain string keys (not a `#[contracttype]` enum) so `stellar_spend_shared::auth`'s
-// `Symbol::new(env, key)` lookups resolve to the same storage entries this contract
-// writes.
-const ADMIN_KEY: &str = "admin";
-const SIGNERS_KEY: &str = "signers";
-const THRESHOLD_KEY: &str = "threshold";
-const HIGH_VALUE_LIMIT_KEY: &str = "hv_limit";
-const PROPOSALS_KEY: &str = "proposals";
-const SCHEMA_KEY: &str = "schema";
+// A `#[contracttype]` enum replaces the previous plain `Symbol::new(&env, "...")`
+// keys. Enum variants are stored as compact integer indices in the ledger,
+// reducing per-entry storage overhead compared to string symbols.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DataKey {
+    Signers,
+    Proposals,
+    Schema,
+}
+
+/// Consolidated signer configuration stored under a single [`DataKey::Signers`]
+/// entry. Replaces the previous four separate storage entries (admin, signers,
+/// threshold, hv_limit), cutting storage writes on init and every admin
+/// operation that touches signer state.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignersConfig {
+    pub admin: Address,
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+    pub high_value_limit: i128,
+}
 
 /// Current storage layout version.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -130,7 +142,7 @@ impl MultisigAuthority {
         threshold: u32,
         high_value_limit: i128,
     ) -> Result<(), ContractError> {
-        if env.storage().instance().has(&Symbol::new(&env, SCHEMA_KEY)) {
+        if env.storage().instance().has(&DataKey::Schema) {
             return Err(ContractError::AlreadyInitialized);
         }
         admin.require_auth();
@@ -149,21 +161,23 @@ impl MultisigAuthority {
         }
         require_non_negative_amount(high_value_limit)?;
 
-        let storage = env.storage().instance();
-        storage.set(&Symbol::new(&env, ADMIN_KEY), &admin);
-        storage.set(&Symbol::new(&env, SIGNERS_KEY), &signers);
-        storage.set(&Symbol::new(&env, THRESHOLD_KEY), &threshold);
-        storage.set(&Symbol::new(&env, HIGH_VALUE_LIMIT_KEY), &high_value_limit);
-        storage.set(
-            &Symbol::new(&env, PROPOSALS_KEY),
+        let config = SignersConfig {
+            admin,
+            signers,
+            threshold,
+            high_value_limit,
+        };
+        env.storage().instance().set(&DataKey::Signers, &config);
+        env.storage().instance().set(
+            &DataKey::Proposals,
             &Map::<String, Proposal>::new(&env),
         );
-        storage.set(&Symbol::new(&env, SCHEMA_KEY), &SCHEMA_VERSION);
+        env.storage().instance().set(&DataKey::Schema, &SCHEMA_VERSION);
         Self::bump_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("init"),),
-            (admin, threshold, high_value_limit),
+            (config.admin, config.threshold, config.high_value_limit),
         );
         Ok(())
     }
@@ -183,8 +197,7 @@ impl MultisigAuthority {
         require_string_len(&description, MAX_DESCRIPTION_LEN)?;
         require_non_negative_amount(value)?;
 
-        proposer.require_auth();
-        assert_is_signer(&env, &proposer, SIGNERS_KEY)?;
+        assert_is_signer(&env, &proposer)?;
 
         let mut proposals = Self::load_proposals(&env);
         if proposals.contains_key(id.clone()) {
@@ -211,7 +224,7 @@ impl MultisigAuthority {
         );
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, PROPOSALS_KEY), &proposals);
+            .set(&DataKey::Proposals, &proposals);
         Self::bump_instance_ttl(&env);
 
         env.events()
@@ -224,8 +237,7 @@ impl MultisigAuthority {
     /// Emits a `signed` event for every signature collected (audit trail).
     pub fn sign(env: Env, signer: Address, proposal_id: String) -> Result<u32, ContractError> {
         Self::require_current_schema(&env)?;
-        signer.require_auth();
-        assert_is_signer(&env, &signer, SIGNERS_KEY)?;
+        assert_is_signer(&env, &signer)?;
 
         let mut proposals = Self::load_proposals(&env);
         let mut proposal = proposals
@@ -248,7 +260,7 @@ impl MultisigAuthority {
         proposals.set(proposal_id.clone(), proposal);
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, PROPOSALS_KEY), &proposals);
+            .set(&DataKey::Proposals, &proposals);
         Self::bump_instance_ttl(&env);
 
         env.events()
@@ -265,8 +277,7 @@ impl MultisigAuthority {
         proposal_id: String,
     ) -> Result<i128, ContractError> {
         Self::require_current_schema(&env)?;
-        executor.require_auth();
-        assert_is_signer(&env, &executor, SIGNERS_KEY)?;
+        assert_is_signer(&env, &executor)?;
 
         let mut proposals = Self::load_proposals(&env);
         let mut proposal = proposals
@@ -292,7 +303,7 @@ impl MultisigAuthority {
         proposals.set(proposal_id.clone(), proposal);
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, PROPOSALS_KEY), &proposals);
+            .set(&DataKey::Proposals, &proposals);
         Self::bump_instance_ttl(&env);
 
         env.events().publish(
@@ -307,21 +318,18 @@ impl MultisigAuthority {
     /// Add a new signer. Admin only.
     pub fn add_signer(env: Env, admin: Address, new_signer: Address) -> Result<(), ContractError> {
         Self::require_current_schema(&env)?;
-        admin.require_auth();
-        assert_is_admin(&env, &admin, ADMIN_KEY)?;
+        assert_is_admin(&env, &admin)?;
 
-        let mut signers = Self::load_signers(&env)?;
-        if signers.contains(new_signer.clone()) {
+        let mut config = Self::load_signers_config(&env)?;
+        if config.signers.contains(new_signer.clone()) {
             return Err(ContractError::InvalidInput);
         }
-        if signers.len() >= MAX_SIGNERS {
+        if config.signers.len() >= MAX_SIGNERS {
             return Err(ContractError::InvalidInput);
         }
 
-        signers.push_back(new_signer.clone());
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, SIGNERS_KEY), &signers);
+        config.signers.push_back(new_signer.clone());
+        env.storage().instance().set(&DataKey::Signers, &config);
         Self::bump_instance_ttl(&env);
 
         env.events()
@@ -332,19 +340,20 @@ impl MultisigAuthority {
     /// Remove a signer. Admin only. Fails if removal would make quorum unreachable.
     pub fn remove_signer(env: Env, admin: Address, signer: Address) -> Result<(), ContractError> {
         Self::require_current_schema(&env)?;
-        admin.require_auth();
-        assert_is_admin(&env, &admin, ADMIN_KEY)?;
+        assert_is_admin(&env, &admin)?;
 
-        let mut signers = Self::load_signers(&env)?;
-        let threshold = Self::stored_threshold(&env)?;
+        let mut config = Self::load_signers_config(&env)?;
+        let threshold = config.threshold;
 
-        let index = signers
+        let index = config
+            .signers
             .first_index_of(signer.clone())
             .ok_or(ContractError::NotFound)?;
 
         // Checked subtraction: the original `(signers.len() - 1) < threshold`
         // underflowed to u32::MAX on an empty set and let the check pass.
-        let remaining = signers
+        let remaining = config
+            .signers
             .len()
             .checked_sub(1)
             .ok_or(ContractError::InvalidInput)?;
@@ -352,10 +361,8 @@ impl MultisigAuthority {
             return Err(ContractError::InvalidInput);
         }
 
-        signers.remove(index);
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, SIGNERS_KEY), &signers);
+        config.signers.remove(index);
+        env.storage().instance().set(&DataKey::Signers, &config);
         Self::bump_instance_ttl(&env);
 
         env.events().publish((symbol_short!("rm_sgn"),), signer);
@@ -369,17 +376,15 @@ impl MultisigAuthority {
         new_threshold: u32,
     ) -> Result<(), ContractError> {
         Self::require_current_schema(&env)?;
-        admin.require_auth();
-        assert_is_admin(&env, &admin, ADMIN_KEY)?;
+        assert_is_admin(&env, &admin)?;
 
-        let signers = Self::load_signers(&env)?;
-        if new_threshold == 0 || new_threshold > signers.len() {
+        let mut config = Self::load_signers_config(&env)?;
+        if new_threshold == 0 || new_threshold > config.signers.len() {
             return Err(ContractError::InvalidInput);
         }
 
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, THRESHOLD_KEY), &new_threshold);
+        config.threshold = new_threshold;
+        env.storage().instance().set(&DataKey::Signers, &config);
         Self::bump_instance_ttl(&env);
 
         env.events()
@@ -394,20 +399,19 @@ impl MultisigAuthority {
         limit: i128,
     ) -> Result<(), ContractError> {
         Self::require_current_schema(&env)?;
-        admin.require_auth();
-        assert_is_admin(&env, &admin, ADMIN_KEY)?;
+        assert_is_admin(&env, &admin)?;
         require_non_negative_amount(limit)?;
 
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, HIGH_VALUE_LIMIT_KEY), &limit);
+        let mut config = Self::load_signers_config(&env)?;
+        config.high_value_limit = limit;
+        env.storage().instance().set(&DataKey::Signers, &config);
         Self::bump_instance_ttl(&env);
 
         env.events().publish((symbol_short!("set_hvl"),), limit);
         Ok(())
     }
 
-    // ── View functions ────────────────────────────────────────────────────────
+    // ── View functions ────────────────────────────────────────────────────
 
     /// Signatures required for a proposal of the given value.
     pub fn required_threshold(env: Env, value: i128) -> Result<u32, ContractError> {
@@ -454,20 +458,28 @@ impl MultisigAuthority {
 
     pub fn get_signers(env: Env) -> Result<Vec<Address>, ContractError> {
         Self::require_current_schema(&env)?;
-        Self::load_signers(&env)
+        let config = Self::load_signers_config(&env)?;
+        Ok(config.signers)
     }
 
     pub fn get_threshold(env: Env) -> Result<u32, ContractError> {
         Self::require_current_schema(&env)?;
-        Self::stored_threshold(&env)
+        let config = Self::load_signers_config(&env)?;
+        Ok(config.threshold)
     }
 
-    // ── Upgrade surface (issue #817) ──────────────────────────────────────────
+    pub fn get_high_value_limit(env: Env) -> Result<i128, ContractError> {
+        Self::require_current_schema(&env)?;
+        let config = Self::load_signers_config(&env)?;
+        Ok(config.high_value_limit)
+    }
+
+    // ── Upgrade surface (issue #817) ──────────────────────────────────
 
     pub fn schema_version(env: Env) -> Result<u32, ContractError> {
         env.storage()
             .instance()
-            .get(&Symbol::new(&env, SCHEMA_KEY))
+            .get(&DataKey::Schema)
             .ok_or(ContractError::NotInitialized)
     }
 
@@ -480,8 +492,7 @@ impl MultisigAuthority {
         admin: Address,
         new_wasm_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
-        admin.require_auth();
-        assert_is_admin(&env, &admin, ADMIN_KEY)?;
+        assert_is_admin(&env, &admin)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         env.events().publish((symbol_short!("upgrade"),), ());
         Ok(())
@@ -489,13 +500,12 @@ impl MultisigAuthority {
 
     /// Convert persisted state to [`SCHEMA_VERSION`]. Returns the version migrated from.
     pub fn migrate(env: Env, admin: Address) -> Result<u32, ContractError> {
-        admin.require_auth();
-        assert_is_admin(&env, &admin, ADMIN_KEY)?;
+        assert_is_admin(&env, &admin)?;
 
         let stored: u32 = env
             .storage()
             .instance()
-            .get(&Symbol::new(&env, SCHEMA_KEY))
+            .get(&DataKey::Schema)
             .ok_or(ContractError::NotInitialized)?;
 
         if stored == SCHEMA_VERSION {
@@ -512,7 +522,7 @@ impl MultisigAuthority {
             let old: Map<String, ProposalV1> = env
                 .storage()
                 .instance()
-                .get(&Symbol::new(&env, PROPOSALS_KEY))
+                .get(&DataKey::Proposals)
                 .unwrap_or_else(|| Map::new(&env));
 
             let mut migrated: Map<String, Proposal> = Map::new(&env);
@@ -534,57 +544,45 @@ impl MultisigAuthority {
             }
             env.storage()
                 .instance()
-                .set(&Symbol::new(&env, PROPOSALS_KEY), &migrated);
+                .set(&DataKey::Proposals, &migrated);
         }
 
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, SCHEMA_KEY), &SCHEMA_VERSION);
+            .set(&DataKey::Schema, &SCHEMA_VERSION);
         Self::bump_instance_ttl(&env);
         env.events()
             .publish((symbol_short!("migrate"),), (stored, SCHEMA_VERSION));
         Ok(stored)
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
+    // ── Internal helpers ──────────────────────────────────────────────
 
     fn load_proposals(env: &Env) -> Map<String, Proposal> {
         env.storage()
             .instance()
-            .get(&Symbol::new(env, PROPOSALS_KEY))
+            .get(&DataKey::Proposals)
             .unwrap_or_else(|| Map::new(env))
     }
 
-    fn load_signers(env: &Env) -> Result<Vec<Address>, ContractError> {
+    fn load_signers_config(env: &Env) -> Result<SignersConfig, ContractError> {
         env.storage()
             .instance()
-            .get(&Symbol::new(env, SIGNERS_KEY))
-            .ok_or(ContractError::NotInitialized)
-    }
-
-    fn stored_threshold(env: &Env) -> Result<u32, ContractError> {
-        env.storage()
-            .instance()
-            .get(&Symbol::new(env, THRESHOLD_KEY))
+            .get(&DataKey::Signers)
             .ok_or(ContractError::NotInitialized)
     }
 
     fn stored_threshold_and_limit(env: &Env) -> Result<(u32, i128), ContractError> {
-        let threshold = Self::stored_threshold(env)?;
-        let high_value_limit: i128 = env
-            .storage()
-            .instance()
-            .get(&Symbol::new(env, HIGH_VALUE_LIMIT_KEY))
-            .ok_or(ContractError::NotInitialized)?;
-        Ok((threshold, high_value_limit))
+        let config = Self::load_signers_config(env)?;
+        Ok((config.threshold, config.high_value_limit))
     }
 
     /// How many of `signatures` belong to addresses that are still registered signers.
     fn live_signature_count(env: &Env, signatures: &Vec<Address>) -> Result<u32, ContractError> {
-        let signers = Self::load_signers(env)?;
+        let config = Self::load_signers_config(env)?;
         let mut live = 0u32;
         for candidate in signatures.iter() {
-            if signers.contains(candidate) {
+            if config.signers.contains(candidate) {
                 live += 1;
             }
         }
@@ -593,7 +591,7 @@ impl MultisigAuthority {
 
     fn require_current_schema(env: &Env) -> Result<(), ContractError> {
         check_schema_version(
-            env.storage().instance().get(&Symbol::new(env, SCHEMA_KEY)),
+            env.storage().instance().get(&DataKey::Schema),
             SCHEMA_VERSION,
         )
     }
@@ -603,6 +601,39 @@ impl MultisigAuthority {
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     }
+}
+
+// ── Local admin/signer auth helpers ────────────────────────────────────
+//
+// These replace `stellar_spend_shared::auth::assert_is_admin` / `assert_is_signer`
+// which used plain `Symbol::new(env, key)` lookups. With the consolidated
+// [`SignersConfig`] stored under [`DataKey::Signers`], we read the entire
+// config in one storage operation instead of two separate lookups.
+
+fn assert_is_admin(env: &Env, admin: &Address) -> Result<(), ContractError> {
+    let config: SignersConfig = env
+        .storage()
+        .instance()
+        .get(&DataKey::Signers)
+        .ok_or(ContractError::NotFound)?;
+    if admin != &config.admin {
+        return Err(ContractError::Unauthorized);
+    }
+    admin.require_auth();
+    Ok(())
+}
+
+fn assert_is_signer(env: &Env, signer: &Address) -> Result<(), ContractError> {
+    let config: SignersConfig = env
+        .storage()
+        .instance()
+        .get(&DataKey::Signers)
+        .ok_or(ContractError::NotFound)?;
+    if !config.signers.contains(signer) {
+        return Err(ContractError::Unauthorized);
+    }
+    signer.require_auth();
+    Ok(())
 }
 
 #[cfg(feature = "testutils")]

@@ -2,10 +2,10 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Env, Map,
+    Address, Env, Map, String,
 };
 
-use crate::{DataKey, TreasuryContract, TreasuryContractClient, SCHEMA_VERSION};
+use crate::{DataKey, TreasuryContract, TreasuryContractClient, TreasuryState, SCHEMA_VERSION};
 
 /// Ledger sequence every fixture starts at.
 pub const START_LEDGER: u32 = 1_000;
@@ -47,7 +47,8 @@ impl TreasuryTest {
     /// Register and `init` with the default fee schedule.
     pub fn setup() -> Self {
         let fixture = Self::registered();
-        fixture.client().init(&fixture.admin, &fixture.treasury);
+        fixture.client().initialize(&fixture.admin);
+        fixture.client().update_treasury(&fixture.treasury);
         fixture
     }
 
@@ -118,6 +119,12 @@ impl TreasuryTest {
             storage.set(&DataKey::FeeSchedule, &schedule);
             storage.remove(&DataKey::TotalCollected);
             storage.set(&DataKey::Schema, &1u32);
+            let state = TreasuryState {
+                total_balance: 0,
+                reserved: 0,
+                available: 0,
+            };
+            storage.set(&String::from_str(&self.env, "state"), &state);
         });
     }
 
@@ -134,6 +141,12 @@ impl TreasuryTest {
             storage.set(&DataKey::FeeSchedule, &schedule);
             storage.set(&DataKey::TotalCollected, &total_collected);
             storage.set(&DataKey::Schema, &2u32);
+            let state = TreasuryState {
+                total_balance: 0,
+                reserved: 0,
+                available: 0,
+            };
+            storage.set(&String::from_str(&self.env, "state"), &state);
         });
     }
 

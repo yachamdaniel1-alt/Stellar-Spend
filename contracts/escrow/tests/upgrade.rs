@@ -12,7 +12,7 @@
 //! real old-shaped bytes rather than a current record with a field zeroed out.
 
 use escrow::test_utils::{v1_deposit, EscrowTest, START_LEDGER};
-use escrow::{DEFAULT_TIMEOUT_LEDGERS, SCHEMA_VERSION};
+use escrow::{DEFAULT_TIMEOUT_LEDGERS, EscrowStatus, SCHEMA_VERSION};
 use stellar_spend_shared::errors::ContractError;
 
 // ── Pre-conditions: the seeded state really is the old layout ────────────────
@@ -107,8 +107,14 @@ fn migrate_preserves_every_existing_deposit_field() {
             new.timeout_ledger, old.timeout_ledger,
             "deposit {id}: timeout ledger"
         );
-        assert_eq!(new.released, old.released, "deposit {id}: released flag");
-        assert_eq!(new.refunded, old.refunded, "deposit {id}: refunded flag");
+        let expected_status = if old.released {
+            EscrowStatus::Resolved
+        } else if old.refunded {
+            EscrowStatus::Cancelled
+        } else {
+            EscrowStatus::Pending
+        };
+        assert_eq!(new.status, expected_status, "deposit {id}: status");
         assert_eq!(new.fee_bps, 0, "deposit {id}: new field defaults to zero");
     }
 }
@@ -121,14 +127,11 @@ fn migrated_deposits_are_readable_through_the_public_api() {
     // The whole point: state written by the old build is usable by the new one.
     let open = t.client().get_deposit(&0);
     assert_eq!(open.amount, 5_000);
-    assert!(!open.released && !open.refunded);
+    assert_eq!(open.status, EscrowStatus::Pending);
 
     let already_released = t.client().get_deposit(&1);
     assert_eq!(already_released.amount, 9_100);
-    assert!(
-        already_released.released,
-        "a deposit released before the upgrade must stay released"
-    );
+    assert_eq!(already_released.status, EscrowStatus::Resolved);
 }
 
 #[test]
@@ -237,7 +240,7 @@ fn migration_preserves_a_refunded_deposit() {
     t.client().migrate();
 
     let refunded = t.client().get_deposit(&0);
-    assert!(refunded.refunded, "a refunded deposit must stay refunded");
+    assert_eq!(refunded.status, EscrowStatus::Cancelled, "a refunded deposit must stay refunded");
     assert_eq!(refunded.amount, 1_200);
     assert_eq!(
         t.client().try_release(&0, &t.bridge),
@@ -246,7 +249,7 @@ fn migration_preserves_a_refunded_deposit() {
     );
 
     // The untouched neighbour is unaffected.
-    assert!(!t.client().get_deposit(&1).refunded);
+    assert_eq!(t.client().get_deposit(&1).status, EscrowStatus::Pending);
 }
 
 // ── Sanity: the fixture's own assumptions ───────────────────────────────────

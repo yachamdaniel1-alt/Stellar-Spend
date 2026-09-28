@@ -1,14 +1,17 @@
 //! Pure fee arithmetic for the fee-manager contract (issue #984).
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::Env;
 use stellar_spend_shared::{
     errors::ContractError,
     validation::{basis_points_of, require_basis_points, require_positive_amount, MAX_BASIS_POINTS},
 };
 
-use crate::{DataKey, FeeManagerContract, SCHEMA_VERSION};
+use crate::{DataKey, SCHEMA_VERSION};
 
-impl FeeManagerContract {
+/// Fee calculation handler
+pub struct Calculator;
+
+impl Calculator {
     /// Fee for `amount` at an explicit rate.
     pub fn calculate_fee(env: Env, amount: i128, fee_rate: u32) -> Result<i128, ContractError> {
         Self::require_current_schema(&env)?;
@@ -23,7 +26,7 @@ impl FeeManagerContract {
 
     /// Fee for `amount` at the configured default rate.
     pub fn calculate_default_fee(env: Env, amount: i128) -> Result<i128, ContractError> {
-        let rate = Self::default_rate(env.clone())?;
+        let rate = Self::get_default_rate(env.clone())?;
         Self::calculate_fee(env, amount, rate)
     }
 
@@ -45,7 +48,7 @@ impl FeeManagerContract {
             .unwrap_or(false)
     }
 
-    fn default_rate(env: Env) -> Result<u32, ContractError> {
+    fn get_default_rate(env: Env) -> Result<u32, ContractError> {
         Self::require_current_schema(&env)?;
         env.storage()
             .instance()

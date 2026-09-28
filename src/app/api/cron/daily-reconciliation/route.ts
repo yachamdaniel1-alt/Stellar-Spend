@@ -1,33 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runReconciliationJob, getReconciliationHistory } from '@/lib/reconciliation';
-import { dal } from '@/lib/db';
+import { runDailyReconciliation } from '@/lib/reconciliation';
 import { logger } from '@/lib/logger';
-import type { ReconciliationRecord } from '@/lib/reconciliation';
 import { ErrorHandler } from '@/lib/error-handler';
 import { ApiError, ErrorType } from '@/lib/error-types';
-import type { Transaction } from '@/lib/transaction-storage';
-
-type ReconciliationTransaction = Transaction & { baseTxHash?: string };
-
-async function fetchDailyRecords(): Promise<ReconciliationRecord[]> {
-  const yesterday = Date.now() - 24 * 60 * 60 * 1000;
-  try {
-    const transactions = await dal.getByUser('*').catch(() => []);
-    return transactions
-      .filter((tx: ReconciliationTransaction) => tx.timestamp >= yesterday)
-      .map((tx: ReconciliationTransaction) => ({
-        transactionId: tx.id,
-        stellarTxHash: tx.stellarTxHash,
-        baseTxHash: tx.baseTxHash,
-        paycrestOrderId: tx.payoutOrderId,
-        amount: tx.amount,
-        currency: tx.currency,
-        timestamp: new Date(tx.timestamp).toISOString(),
-      }));
-  } catch {
-    return [];
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -38,27 +13,15 @@ export async function POST(req: NextRequest) {
 
     logger.info('cron.daily-reconciliation.start', {});
 
-    const records = await fetchDailyRecords();
-    const entry = await runReconciliationJob(records);
-    const history = await getReconciliationHistory();
+    const result = await runDailyReconciliation();
 
     logger.info('cron.daily-reconciliation.complete', {
-      runId: entry.id,
-      totalTransactions: entry.report.totalTransactions,
-      discrepancies: entry.report.discrepancies.length,
+      runId: result.runId,
+      totalTransactions: result.totalTransactions,
+      discrepancies: result.discrepancies,
     });
 
-    return NextResponse.json({
-      ok: true,
-      totalTransactions: entry.report.totalTransactions,
-      matchedTransactions: entry.report.matchedTransactions,
-      discrepancies: entry.report.discrepancies.length,
-      alerts: entry.alerts.length,
-      summary: entry.report.summary,
-      runId: entry.id,
-      timestamp: entry.runAt,
-      history: history.slice(0, 5),
-    });
+    return NextResponse.json(result);
   } catch (err) {
     logger.error('cron.daily-reconciliation.failed', {}, err);
     return ErrorHandler.handle(new ApiError(ErrorType.SERVER_ERROR, 'Daily reconciliation failed'));

@@ -9,7 +9,7 @@ use soroban_sdk::{symbol_short, Env};
 use stellar_spend_shared::errors::ContractError;
 
 use crate::release::{acquire_lock, load_deposits, release_lock};
-use crate::{DataKey, INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD};
+use crate::{DataKey, EscrowStatus, INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD};
 
 /// Refund a deposit to its depositor once the timeout ledger has passed.
 ///
@@ -30,7 +30,7 @@ pub fn refund(env: &Env, deposit_id: u64) -> Result<i128, ContractError> {
 
     deposit.depositor.require_auth();
 
-    if deposit.released || deposit.refunded {
+    if matches!(deposit.status, EscrowStatus::Resolved | EscrowStatus::Cancelled) {
         release_lock(env);
         return Err(ContractError::AlreadyProcessed);
     }
@@ -42,7 +42,7 @@ pub fn refund(env: &Env, deposit_id: u64) -> Result<i128, ContractError> {
     // ── EFFECT ─────────────────────────────────────────────────────────
     let amount = deposit.amount;
     let depositor = deposit.depositor.clone();
-    deposit.refunded = true;
+    deposit.status = EscrowStatus::Cancelled;
     deposits.set(deposit_id, deposit);
     env.storage().instance().set(&DataKey::Deposits, &deposits);
     env.storage()

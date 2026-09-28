@@ -468,3 +468,43 @@ export async function aggregateRecordsByDay(
 
   return byDay;
 }
+
+export async function fetchDailyRecords(): Promise<ReconciliationRecord[]> {
+  const yesterday = Date.now() - 24 * 60 * 60 * 1000;
+  try {
+    // Import dynamically to avoid circular dependency
+    const { dal } = await import('@/lib/db');
+    const transactions = await dal.getByUser('*').catch(() => []);
+    return transactions
+      .filter((tx: any) => tx.timestamp >= yesterday)
+      .map((tx: any) => ({
+        transactionId: tx.id,
+        stellarTxHash: tx.stellarTxHash,
+        baseTxHash: tx.baseTxHash,
+        paycrestOrderId: tx.payoutOrderId,
+        amount: tx.amount,
+        currency: tx.currency,
+        timestamp: new Date(tx.timestamp).toISOString(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export async function runDailyReconciliation(): Promise<any> {
+  const records = await fetchDailyRecords();
+  const entry = await runReconciliationJob(records);
+  const history = await getReconciliationHistory();
+
+  return {
+    ok: true,
+    totalTransactions: entry.report.totalTransactions,
+    matchedTransactions: entry.report.matchedTransactions,
+    discrepancies: entry.report.discrepancies.length,
+    alerts: entry.alerts.length,
+    summary: entry.report.summary,
+    runId: entry.id,
+    timestamp: entry.runAt,
+    history: history.slice(0, 5),
+  };
+}

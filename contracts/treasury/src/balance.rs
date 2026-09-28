@@ -1,4 +1,3 @@
-use soroban_sdk::{Env, panic_with_error};
 use stellar_spend_shared::errors::ContractError;
 
 /// Treasury balance management with overflow protection
