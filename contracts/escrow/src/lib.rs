@@ -45,7 +45,7 @@
 //! | `dispute`     | [`EscrowContract::set_timeout`], `can_refund`        |
 
 #![no_std]
-mod dispute;
+pub mod dispute;
 mod create;
 mod refund;
 mod release;
