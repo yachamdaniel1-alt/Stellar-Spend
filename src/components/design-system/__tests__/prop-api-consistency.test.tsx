@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import type React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { Button } from '../Button';
 import { Badge } from '../Badge';
@@ -14,7 +15,7 @@ import { Card, CardHeader, CardContent, CardFooter } from '../Card';
 describe('Design System Prop API Consistency — Issue #1097', () => {
   describe('Variant prop consistency', () => {
     it('Button supports variant prop with consistent naming', () => {
-      const { unmount, rerender } = render(<Button variant="primary">Primary</Button>);
+      const { unmount } = render(<Button variant="primary">Primary</Button>);
       expect(screen.getByRole('button')).toHaveTextContent('Primary');
 
       unmount();
@@ -109,7 +110,7 @@ describe('Design System Prop API Consistency — Issue #1097', () => {
 
   describe('Handler prop naming conventions (onX)', () => {
     it('Button uses onClick handler like native HTML', () => {
-      const handleClick = vi.fn() as any;
+      const handleClick = vi.fn();
       render(<Button onClick={handleClick}>Click me</Button>);
 
       const button = screen.getByRole('button');
@@ -171,7 +172,7 @@ describe('Design System Prop API Consistency — Issue #1097', () => {
 
     it('all components use forwardRef for ref consistency', () => {
       // Components should support ref forwarding for advanced use cases
-      const ref = { current: null } as any;
+      const ref: React.RefObject<HTMLButtonElement> = { current: null };
 
       render(
         <Button ref={ref} data-testid="ref-button">
@@ -242,7 +243,7 @@ describe('Design System Prop API Consistency — Issue #1097', () => {
     });
 
     it('disabled state prevents interaction across all components', () => {
-      const onClick = vi.fn() as any;
+      const onClick = vi.fn();
 
       const { unmount } = render(
         <Button onClick={onClick} disabled={true}>
@@ -390,8 +391,3 @@ describe('Design System Prop API Consistency — Issue #1097', () => {
     });
   });
 });
-
-// Mock vi for the test file
-const vi = {
-  fn: () => () => {},
-} as any;
