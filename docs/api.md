@@ -87,13 +87,13 @@ Mutating endpoints support the `Idempotency-Key` request header to allow safe re
 
 ```http
 POST /api/v1/offramp/paycrest/order
-Idempotency-Key: order-abc123-attempt-1
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 ```
 
 Response headers:
 
 ```
-Idempotency-Key: order-abc123-attempt-1
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 Idempotency-Status: created    # or: replayed | conflict
 ```
 
@@ -132,7 +132,7 @@ Creates a new API key and returns the plaintext secret once.
   "data": {
     "id": "uuid",
     "name": "Production Partner",
-    "keyPrefix": "abc123def456",
+    "keyPrefix": "<public-key-prefix>",
     "status": "active",
     "plaintextKey": "ssp_live_abc123def456.very-secret-value"
   }

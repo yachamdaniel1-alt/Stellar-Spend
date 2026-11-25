@@ -1,12 +1,16 @@
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect } from 'vitest';
 
 const FIXTURE_DIR = join(__dirname, 'fixtures', 'secret-scan');
 const GITLEAKS_CONFIG = join(process.cwd(), '.gitleaks.toml');
-const TEMP_CONFIG_PATH = join(process.cwd(), 'gitleaks-test-config.toml');
-const TEMP_REPORT_PATH = join(process.cwd(), 'gitleaks-test-report.json');
+// Temp artifacts live in the OS tmpdir so they never land in the repo root
+// (where they would race with repo-wide secret-scan acceptance tests).
+const TEMP_DIR = mkdtempSync(join(tmpdir(), 'gitleaks-verification-'));
+const TEMP_CONFIG_PATH = join(TEMP_DIR, 'gitleaks-test-config.toml');
+const TEMP_REPORT_PATH = join(TEMP_DIR, 'gitleaks-test-report.json');
 
 function writeTempTestConfig(): void {
   const config = [

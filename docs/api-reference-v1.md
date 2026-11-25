@@ -43,8 +43,8 @@ All `/api/v1/*` endpoints require an API key. Pass your key via either:
 
 | Header                        | Example                                |
 | ----------------------------- | -------------------------------------- |
-| `X-API-Key: <key>`            | `X-API-Key: sk_live_abc123`            |
-| `Authorization: Bearer <key>` | `Authorization: Bearer sk_live_abc123` |
+| `X-API-Key: <key>`            | `X-API-Key: <your_api_key>`            |
+| `Authorization: Bearer <key>` | `Authorization: Bearer <your_api_key>` |
 
 API keys are issued with one or more [scopes](#api-key-scopes) that restrict which endpoints they can access. Keys can be managed via `GET /api/api-keys` and `POST /api/api-keys`.
 

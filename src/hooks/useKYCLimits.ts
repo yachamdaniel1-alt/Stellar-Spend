@@ -172,4 +172,4 @@ export const useKYCLimits = (userId: string | null | undefined): UseKYCLimitsRes
   };
 };
 
-export default useKYCLimits;
+

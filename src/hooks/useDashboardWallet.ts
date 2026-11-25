@@ -60,4 +60,4 @@ export function useDashboardWallet() {
   };
 }
 
-export type UseDashboardWalletReturn = ReturnType<typeof useDashboardWallet>;
+

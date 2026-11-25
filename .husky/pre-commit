@@ -1,14 +1,8 @@
-# Secret scanning via gitleaks — blocks commit if secrets are detected
-# Uses the project's .gitleaks.toml config with Stellar-specific rules and allowlists
-# --no-git scans only the working directory (not git history) for faster pre-commit checks
-if command -v gitleaks >/dev/null 2>&1; then
-  gitleaks detect --source . --no-git --config .gitleaks.toml --verbose --no-banner
-else
-  echo "WARNING: gitleaks not installed — skipping secret scan."
-  echo "Install: brew install gitleaks (macOS) | apt-get install gitleaks (Debian/Ubuntu)"
-  echo "         Or: go install github.com/gitleaks/gitleaks/v8@latest"
-  exit 1
-fi
+# Secret scanning via gitleaks — blocks commit if secrets are detected.
+# Single source of truth: scripts/secret-scan.sh (scans the working tree
+# with the project's .gitleaks.toml config; exits non-zero when a secret
+# is found or gitleaks is not installed).
+bash scripts/secret-scan.sh || exit 1
 
 # Lint and format only the files staged for this commit.
 # Rules for each file type live under "lint-staged" in package.json.

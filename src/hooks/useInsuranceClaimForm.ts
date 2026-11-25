@@ -240,4 +240,4 @@ export function useInsuranceClaimForm({
   };
 }
 
-export default useInsuranceClaimForm;
+

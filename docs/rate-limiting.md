@@ -179,10 +179,10 @@ The public prefix (`keyPrefix`) is stored in plaintext for display; the full key
 
 ```http
 GET /api/v1/fx-rates HTTP/1.1
-X-API-Key: ssp_live_a1b2c3d4e5f6.0102...
+X-API-Key: <your_api_key>
 
 # Or via Authorization header:
-Authorization: Bearer ssp_live_a1b2c3d4e5f6.0102...
+Authorization: Bearer <your_api_key>
 ```
 
 ### API key lifecycle

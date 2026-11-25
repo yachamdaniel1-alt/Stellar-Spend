@@ -103,7 +103,7 @@ async function seedTransactionHistory(page: Page): Promise<void> {
     currency: 'NGN',
     destinationAmount: '79100.00',
     status: 'settled',
-    txHash: 'seed000000000000000000000000000000000000000000000000000000000001',
+    txHash: 'feed000000000000000000000000000000000000000000000000000000000001',
     createdAt: new Date(Date.now() - 86_400_000).toISOString(),
     recipient: {
       institution: 'GTB',

@@ -29,6 +29,8 @@
     "audit:check": "npm audit --audit-level=high",
     "audit:fix": "npm audit fix",
     "routes:audit": "node scripts/audit-api-routes.cjs",
+    "secret:scan": "bash scripts/secret-scan.sh",
+    "secret:scan:history": "bash scripts/secret-scan.sh --history",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "test-storybook": "test-storybook",
